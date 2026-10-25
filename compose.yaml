@@ -1,0 +1,45 @@
+services:
+  reader:
+    build: .
+    image: reader-go:0.0.5
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${READER_BIND_IP:-127.0.0.1}:${READER_PORT:-8081}:8080"
+    environment:
+      READER_DB_HOST: ${READER_DB_HOST:?Set MySQL hostname}
+      READER_DB_PORT: ${READER_DB_PORT:-3306}
+      READER_DB_NAME: ${READER_DB_NAME:-reader}
+      READER_DB_USER: ${READER_DB_USER:-reader}
+      READER_DB_PASSWORD_FILE: /run/secrets/db_password
+      READER_DB_TLS_MODE: ${READER_DB_TLS_MODE:-true}
+      READER_SETUP_TOKEN_FILE: /run/secrets/setup_token
+      READER_PUBLIC_URL: ${READER_PUBLIC_URL:?Set public origin}
+      READER_COOKIE_SECURE: ${READER_COOKIE_SECURE:-true}
+      READER_DATA_DIR: /data
+    secrets:
+      - db_password
+      - setup_token
+    volumes:
+      - reader_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 2
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+  setup_token:
+    file: ./secrets/setup_token.txt
+volumes:
+  reader_data:

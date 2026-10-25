@@ -1,0 +1,52 @@
+package server
+
+import "net/http"
+
+func (s *Server) routes() {
+	s.route("GET /api/v1/setup", false, false, s.setupStatus)
+	s.route("POST /api/v1/setup", false, false, s.setup)
+	s.route("POST /api/v1/auth/login", false, false, s.login)
+	s.route("GET /api/v1/auth/me", true, false, func(w http.ResponseWriter, r *http.Request) error { respond(w, current(r)); return nil })
+	s.route("POST /api/v1/auth/logout", true, false, s.logout)
+	s.route("PUT /api/v1/auth/password", true, false, s.password)
+	s.route("GET /api/v1/admin/users", true, true, s.users)
+	s.route("POST /api/v1/admin/users", true, true, s.createUser)
+	s.route("PATCH /api/v1/admin/users/{id}", true, true, s.updateUser)
+	s.route("POST /api/v1/admin/users/{id}/reset-password", true, true, s.resetPassword)
+	s.route("GET /api/v1/sources", true, false, s.sources)
+	s.route("GET /api/v1/sources/groups", true, false, s.sourceGroups)
+	s.route("POST /api/v1/admin/sources/import", true, true, s.importSources)
+	s.route("POST /api/v1/admin/sources/batch", true, true, s.batchSources)
+	s.route("POST /api/v1/admin/sources/deduplicate", true, true, s.deduplicateSources)
+	s.route("POST /api/v1/admin/sources/remote", true, true, s.remoteSource)
+	s.route("PUT /api/v1/admin/sources/{id}", true, true, s.updateSource)
+	s.route("DELETE /api/v1/admin/sources/{id}", true, true, s.deleteSource)
+	s.route("POST /api/v1/admin/sources/{id}/check", true, true, s.checkSource)
+	s.route("POST /api/v1/search", true, false, s.searchBooks)
+	s.route("POST /api/v1/search/stream", true, false, s.searchBooksStream)
+	s.route("GET /api/v1/books", true, false, s.books)
+	s.route("POST /api/v1/books/online", true, false, s.onlineBook)
+	s.route("GET /api/v1/books/{id}", true, false, s.getBook)
+	s.route("PATCH /api/v1/books/{id}", true, false, s.updateBook)
+	s.route("DELETE /api/v1/books/{id}", true, false, s.deleteBook)
+	s.route("GET /api/v1/books/{id}/chapters", true, false, s.chapters)
+	s.route("GET /api/v1/books/{id}/chapters/{chapterId}", true, false, s.content)
+	s.route("POST /api/v1/books/{id}/refresh", true, false, s.refreshBook)
+	s.route("POST /api/v1/books/{id}/change-source", true, false, s.changeBookSource)
+	s.route("GET /api/v1/books/{id}/progress", true, false, s.getProgress)
+	s.route("PUT /api/v1/books/{id}/progress", true, false, s.putProgress)
+	s.route("GET /api/v1/books/{id}/bookmarks", true, false, s.bookmarks)
+	s.route("POST /api/v1/books/{id}/bookmarks", true, false, s.bookmarks)
+	s.route("DELETE /api/v1/bookmarks/{id}", true, false, s.deleteBookmark)
+	s.route("POST /api/v1/imports", true, false, s.importBook)
+	s.route("GET /api/v1/settings", true, false, s.settings)
+	s.route("PUT /api/v1/settings", true, false, s.settings)
+	s.route("GET /api/v1/system/info", false, false, func(w http.ResponseWriter, r *http.Request) error {
+		respond(w, map[string]string{
+			"version": s.cfg.AppVersion,
+		})
+		return nil
+	})
+	s.route("GET /api/v1/admin/overview", true, true, s.overview)
+	s.route("GET /api/v1/admin/audit", true, true, s.auditList)
+}
