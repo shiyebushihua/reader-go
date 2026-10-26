@@ -2,14 +2,14 @@
 
 [English](README.md) | 简体中文
 
-Go + Vue 3 + TypeScript + MySQL 的自托管阅读服务，当前版本 **v0.0.6**。Docker 从源码构建前端并嵌入单个 Go 二进制程序，运行时不需要 Node.js 或 JVM。
+Go + Vue 3 + TypeScript + MySQL 的自托管阅读服务，当前版本 **v0.0.7**。Docker 从源码构建前端并嵌入单个 Go 二进制程序，运行时不需要 Node.js 或 JVM。
 
 ## 功能
 
 - 私人书架、搜索、TXT/EPUB 导入、书签、阅读进度同步与书架分组。
 - 手机紧凑书架（适配 iOS / 移动端网页交互）、主题/字体/行距设置、上下滚动与左右滑动翻页、一键换源。
 - IndexedDB 书籍/章节离线缓存（不等于完整离线 PWA）。
-- 书源管理、SSE 流式搜索、管理员用户管理与操作审计。
+- 个人独立书源管理（每位用户各自导入、维护并使用自己的书源，互不干扰）、SSE 流式搜索、管理员用户管理与操作审计。
 - 首次令牌初始化，无公开注册，无默认管理员账号或密码。
 - 登录管理员后，连续点击版本号 5 次解锁管理入口；后端接口仍严格校验管理员权限。
 
@@ -63,13 +63,16 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE TABLE IF NOT EXISTS sources (
   id CHAR(32) PRIMARY KEY,
-  source_key CHAR(64) NOT NULL UNIQUE,
+  user_id CHAR(32) NOT NULL DEFAULT '',
+  source_key CHAR(64) NOT NULL,
   name VARCHAR(255) NOT NULL,
   url TEXT NOT NULL,
   group_name VARCHAR(255) NOT NULL DEFAULT '',
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   rule JSON NOT NULL,
-  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  UNIQUE (user_id, source_key),
+  INDEX (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE IF NOT EXISTS books (

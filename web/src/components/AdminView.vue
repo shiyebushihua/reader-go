@@ -28,8 +28,8 @@ import { api, id, message, date } from '../api'
 import type { User, Source, Audit, SearchResult } from '../types'
 import { usernamePattern, usernameError, passwordError } from '../validation'
 
-const props = defineProps<{ currentUser: User }>()
-const tab = ref('overview')
+const props = defineProps<{ currentUser: User; sourcesOnly?: boolean }>()
+const tab = ref(props.sourcesOnly ? 'sources' : 'overview')
 const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
@@ -165,7 +165,7 @@ function handleAuditSizeChange() {
 async function deduplicateSources() {
   if (!confirm('确定执行智能书源去重吗？系统将自动清理 URL 规范化后重复以及同名冗余的历史书源，并保留最新版本。')) return
   await action(async () => {
-    const res = await api<{ cleaned?: number; remaining?: number; removed?: number; retained?: number; total?: number }>('/admin/sources/deduplicate', 'POST')
+    const res = await api<{ cleaned?: number; remaining?: number; removed?: number; retained?: number; total?: number }>('/sources/deduplicate', 'POST')
     const removed = res.cleaned ?? res.removed ?? 0
     const retained = res.remaining ?? res.retained ?? 0
     const total = res.total ?? (removed + retained)
@@ -245,7 +245,7 @@ function parse(text: string) {
 async function importSources() {
   await action(async () => {
     const result = await api<{ imported: number; updated: number; skipped: number; total: number }>(
-      '/admin/sources/import',
+      '/sources/import',
       'POST',
       { sources: parse(raw.value), overwrite: overwrite.value }
     )
@@ -259,7 +259,7 @@ async function importSources() {
 
 async function previewRemote() {
   await action(async () => {
-    const data = await api<unknown>('/admin/sources/remote', 'POST', { url: remoteUrl.value })
+    const data = await api<unknown>('/sources/remote', 'POST', { url: remoteUrl.value })
     raw.value = JSON.stringify(data, null, 2)
   }, '已获取远程 JSON 预览。请检查内容，再确认导入。')
 }
@@ -292,7 +292,7 @@ async function saveSource() {
   await action(async () => {
     const rule = parse(editRule.value)
     if (Array.isArray(rule)) throw new Error('单个书源规则必须为 JSON 对象。')
-    await api(`/admin/sources/${id(editing.value!.id)}`, 'PUT', {
+    await api(`/sources/${id(editing.value!.id)}`, 'PUT', {
       name: editName.value,
       group: editGroup.value,
       enabled: editEnabled.value,
@@ -305,7 +305,7 @@ async function saveSource() {
 
 async function toggleSource(source: Source) {
   await action(async () => {
-    await api(`/admin/sources/${id(source.id)}`, 'PUT', {
+    await api(`/sources/${id(source.id)}`, 'PUT', {
       name: source.name,
       group: source.group,
       enabled: !source.enabled,
@@ -318,7 +318,7 @@ async function toggleSource(source: Source) {
 async function deleteSource(source: Source) {
   if (!confirm(`确定删除书源“${source.name}”吗？`)) return
   await action(async () => {
-    await api(`/admin/sources/${id(source.id)}`, 'DELETE')
+    await api(`/sources/${id(source.id)}`, 'DELETE')
     if (sources.value.length === 1 && sourcePage.value > 1) {
       sourcePage.value--
     }
@@ -333,7 +333,7 @@ async function batchAction(actionType: 'enable' | 'disable' | 'delete') {
     return
   }
   await action(async () => {
-    const res = await api<{ affected: number }>('/admin/sources/batch', 'POST', {
+    const res = await api<{ affected: number }>('/sources/batch', 'POST', {
       ids: selectedSourceIds.value,
       action: actionType
     })
@@ -391,7 +391,7 @@ async function exportSources() {
 async function checkSource() {
   await action(async () => {
     checkResults.value =
-      (await api<SearchResult[]>(`/admin/sources/${id(checkId.value)}/check`, 'POST', {
+      (await api<SearchResult[]>(`/sources/${id(checkId.value)}/check`, 'POST', {
         keyword: checkKeyword.value
       })) || []
   }, '检查请求已完成。无结果并不代表书源一定失效。')
@@ -403,19 +403,19 @@ onMounted(load)
 <template>
   <header class="page-header">
     <div>
-      <span class="eyebrow">A WELL-KEPT READING ROOM</span>
-      <h1>管理控制台</h1>
-      <p>照料好这个空间，让每一次阅读都安心。</p>
+      <span class="eyebrow">{{ props.sourcesOnly ? 'PERSONAL BOOK SOURCES' : 'A WELL-KEPT READING ROOM' }}</span>
+      <h1>{{ props.sourcesOnly ? '我的书源' : '管理控制台' }}</h1>
+      <p>{{ props.sourcesOnly ? '独立维护属于你自己的书源规则，不同账号之间互不干扰。' : '照料好这个空间，让每一次阅读都安心。' }}</p>
     </div>
-    <span class="admin-badge"><ShieldCheck :size="16" />管理员专属</span>
+    <span v-if="!props.sourcesOnly" class="admin-badge"><ShieldCheck :size="16" />管理员专属</span>
   </header>
 
-  <div class="admin-tabs" aria-label="管理分区">
+  <div v-if="!props.sourcesOnly" class="admin-tabs" aria-label="管理分区">
     <button
       v-for="item in [
         { id: 'overview', label: '空间概览', icon: Activity },
         { id: 'users', label: '用户管理', icon: Users },
-        { id: 'sources', label: '书源管理', icon: Globe2 },
+        { id: 'sources', label: '我的书源', icon: Globe2 },
         { id: 'audit', label: '操作日志', icon: FileJson }
       ]"
       :key="item.id"
@@ -460,7 +460,7 @@ onMounted(load)
         <span class="round-icon"><ShieldCheck :size="26" /></span>
         <div>
           <h2>简单、私密、有序</h2>
-          <p>账号由管理员创建；书源规则仅对管理员开放。请定期检查书源，并留意操作日志。</p>
+          <p>账号由管理员创建；书源由每位用户各自导入与独立使用，互不干扰。请留意操作日志。</p>
           <span class="tag">ReaderGo · {{ overview.version }}</span>
         </div>
       </section>

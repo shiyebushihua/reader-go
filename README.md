@@ -2,14 +2,14 @@
 
 English | [简体中文](README_ZH.md)
 
-A self-hosted reading service built with Go + Vue 3 + TypeScript + MySQL, currently at **v0.0.6**. Docker builds the frontend from source and embeds it into a single Go binary—no Node.js or JVM is required at runtime.
+A self-hosted reading service built with Go + Vue 3 + TypeScript + MySQL, currently at **v0.0.7**. Docker builds the frontend from source and embeds it into a single Go binary—no Node.js or JVM is required at runtime.
 
 ## Features
 
 - Personal bookshelf, book search, TXT/EPUB import, bookmarks, reading progress sync, and shelf groups.
 - Compact mobile bookshelf, theme/font/line-spacing customization, vertical scroll & horizontal slide pagination, and book source switching.
 - IndexedDB offline book & chapter caching (note: not a full offline PWA).
-- Book source management, streaming search (SSE), admin user management, and audit logging.
+- Per-user independent book source management (each user imports, edits, and uses their own book sources independently), streaming search (SSE), admin user management, and audit logging.
 - First-run setup token bootstrap, no public registration, and no default admin credentials.
 - After logging in as an administrator, click the version badge 5 times consecutively to unlock the admin console entry; backend APIs strictly enforce admin authorization regardless.
 
@@ -63,13 +63,16 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE TABLE IF NOT EXISTS sources (
   id CHAR(32) PRIMARY KEY,
-  source_key CHAR(64) NOT NULL UNIQUE,
+  user_id CHAR(32) NOT NULL DEFAULT '',
+  source_key CHAR(64) NOT NULL,
   name VARCHAR(255) NOT NULL,
   url TEXT NOT NULL,
   group_name VARCHAR(255) NOT NULL DEFAULT '',
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   rule JSON NOT NULL,
-  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  UNIQUE (user_id, source_key),
+  INDEX (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE IF NOT EXISTS books (

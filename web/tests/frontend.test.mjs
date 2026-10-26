@@ -191,3 +191,13 @@ test('horizontal slide pagination prevents mid-page overlap and scroll step adva
   assert.match(reader, /getScrollPageStep/)
   assert.doesNotMatch(reader, /scroller\.value\.clientHeight \* 0\.8/)
 })
+
+test('every user has access to personal book sources in main navigation and user-scoped endpoints', async () => {
+  const app = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
+  const adminView = await readFile(new URL('../src/components/AdminView.vue', import.meta.url), 'utf8')
+  assert.match(app, /href="#\/sources"/)
+  assert.match(app, /我的书源/)
+  assert.match(adminView, /\/sources\/import/)
+  assert.match(adminView, /\/sources\/batch/)
+  assert.match(adminView, /\/sources\/deduplicate/)
+})

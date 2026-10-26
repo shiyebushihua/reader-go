@@ -32,7 +32,7 @@ import (
 //go:embed schema.sql
 var schema string
 
-const Version = "0.0.6"
+const Version = "0.0.7"
 const DefaultVersion = Version
 
 type Config struct {
@@ -161,6 +161,39 @@ func OpenDB() (*sql.DB, error) {
 	}
 	return db, nil
 }
+func EnsureUserSourcesSchema(ctx context.Context, db *sql.DB) error {
+	var hasCol int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='sources' AND COLUMN_NAME='user_id'").Scan(&hasCol); err != nil {
+		return err
+	}
+	if hasCol == 0 {
+		if _, err := db.ExecContext(ctx, "ALTER TABLE sources ADD COLUMN user_id CHAR(32) NOT NULL DEFAULT '' AFTER id"); err != nil {
+			return err
+		}
+	}
+	// Backfill any legacy global sources (user_id='') to the primary admin user or first user
+	var ownerID string
+	_ = db.QueryRowContext(ctx, "SELECT id FROM users ORDER BY (role='admin') DESC, created_at ASC LIMIT 1").Scan(&ownerID)
+	if ownerID != "" {
+		_, _ = db.ExecContext(ctx, "UPDATE sources SET user_id=? WHERE user_id=''", ownerID)
+	}
+	// Drop legacy global UNIQUE(source_key) index if present and ensure per-user UNIQUE(user_id, source_key)
+	var oldIdx int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM information_schema.STATISTICS
+		WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='sources' AND INDEX_NAME='source_key' AND NON_UNIQUE=0
+	`).Scan(&oldIdx); err == nil && oldIdx > 0 {
+		_, _ = db.ExecContext(ctx, "ALTER TABLE sources DROP INDEX source_key")
+	}
+	var newIdx int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM information_schema.STATISTICS
+		WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='sources' AND COLUMN_NAME='user_id' AND SEQ_IN_INDEX=1 AND NON_UNIQUE=0
+	`).Scan(&newIdx); err == nil && newIdx == 0 {
+		_, _ = db.ExecContext(ctx, "ALTER TABLE sources ADD UNIQUE INDEX idx_user_source_key (user_id, source_key), ADD INDEX idx_sources_user (user_id)")
+	}
+	return nil
+}
 func Migrate(ctx context.Context, db *sql.DB) error {
 	conn, e := db.Conn(ctx)
 	if e != nil {
@@ -180,7 +213,7 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("schema migration failed: %w", e)
 		}
 	}
-	return nil
+	return EnsureUserSourcesSchema(ctx, db)
 }
 func New(db *sql.DB, c Config, assets fs.FS) *Server {
 	s := &Server{db: db, cfg: c, engine: engine.New(), mux: http.NewServeMux(), imports: make(chan struct{}, 1), search: make(chan struct{}, 4), attempts: map[string]attempt{}}

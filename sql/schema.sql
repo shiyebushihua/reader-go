@@ -1,4 +1,4 @@
--- Reader Go (阅间) MySQL 8.0+ Schema DDL (v0.0.6)
+-- Reader Go (阅间) MySQL 8.0+ Schema DDL (v0.0.7)
 -- Charset: utf8mb4 / Collation: utf8mb4_bin
 -- Usage:
 --   mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS reader CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
@@ -33,13 +33,16 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE TABLE IF NOT EXISTS sources (
   id CHAR(32) PRIMARY KEY,
-  source_key CHAR(64) NOT NULL UNIQUE,
+  user_id CHAR(32) NOT NULL DEFAULT '',
+  source_key CHAR(64) NOT NULL,
   name VARCHAR(255) NOT NULL,
   url TEXT NOT NULL,
   group_name VARCHAR(255) NOT NULL DEFAULT '',
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   rule JSON NOT NULL,
-  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  UNIQUE (user_id, source_key),
+  INDEX (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE IF NOT EXISTS books (

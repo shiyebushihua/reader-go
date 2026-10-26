@@ -82,6 +82,9 @@ func run() error {
 	if e = db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); e != nil || version != 1 {
 		return errors.New("database schema not ready; run reader migrate first")
 	}
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	_ = server.EnsureUserSourcesSchema(migrateCtx, db)
+	migrateCancel()
 	assets, e := fs.Sub(static, "static")
 	if e != nil {
 		return e

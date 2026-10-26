@@ -162,7 +162,7 @@ func (s *Server) content(w http.ResponseWriter, r *http.Request) error {
 	}
 	var content string
 	if b.Kind == "online" {
-		src, e := s.source(r.Context(), b.SourceID, true)
+		src, e := s.source(r.Context(), current(r).ID, b.SourceID, true)
 		if e != nil {
 			return e
 		}
@@ -193,7 +193,7 @@ func (s *Server) onlineBook(w http.ResponseWriter, r *http.Request) error {
 	if e := decode(w, r, &v); e != nil {
 		return e
 	}
-	src, e := s.source(r.Context(), v.SourceID, true)
+	src, e := s.source(r.Context(), current(r).ID, v.SourceID, true)
 	if e != nil {
 		return e
 	}
@@ -420,7 +420,7 @@ func (s *Server) refreshBook(w http.ResponseWriter, r *http.Request) error {
 	if b.Kind != "online" {
 		return fail(400, "LOCAL_BOOK", "本地书籍无需刷新")
 	}
-	src, e := s.source(r.Context(), b.SourceID, true)
+	src, e := s.source(r.Context(), current(r).ID, b.SourceID, true)
 	if e != nil {
 		return e
 	}
@@ -512,7 +512,7 @@ func (s *Server) changeBookSource(w http.ResponseWriter, r *http.Request) error 
 	if b.Kind != "online" {
 		return fail(400, "LOCAL_BOOK", "本地导入书籍不支持在线换源")
 	}
-	src, e := s.source(r.Context(), req.SourceID, true)
+	src, e := s.source(r.Context(), current(r).ID, req.SourceID, true)
 	if e != nil {
 		return e
 	}

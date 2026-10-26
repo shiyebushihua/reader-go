@@ -27,24 +27,23 @@ type Source struct {
 	UpdatedAt time.Time       `json:"updatedAt"`
 }
 
-func (s *Server) source(ctx context.Context, id string, enabled bool) (Source, error) {
+func (s *Server) source(ctx context.Context, uid, id string, enabled bool) (Source, error) {
 	var v Source
-	q := "SELECT id,name,url,group_name,enabled,rule,updated_at FROM sources WHERE id=?"
+	q := "SELECT id,name,url,group_name,enabled,rule,updated_at FROM sources WHERE id=? AND user_id=?"
 	if enabled {
 		q += " AND enabled=TRUE"
 	}
-	e := s.db.QueryRowContext(ctx, q, id).Scan(&v.ID, &v.Name, &v.URL, &v.Group, &v.Enabled, &v.Rule, &v.UpdatedAt)
+	e := s.db.QueryRowContext(ctx, q, id, uid).Scan(&v.ID, &v.Name, &v.URL, &v.Group, &v.Enabled, &v.Rule, &v.UpdatedAt)
 	if errors.Is(e, sql.ErrNoRows) {
 		return v, fail(404, "SOURCE_NOT_FOUND", "书源不存在或已禁用")
 	}
 	return v, e
 }
 func (s *Server) sources(w http.ResponseWriter, r *http.Request) error {
-	var conds []string
-	var args []any
-	if current(r).Role != "admin" {
-		conds = append(conds, "enabled=TRUE")
-	} else if enabledStr := r.URL.Query().Get("enabled"); enabledStr != "" && enabledStr != "all" {
+	uid := current(r).ID
+	conds := []string{"user_id=?"}
+	args := []any{uid}
+	if enabledStr := r.URL.Query().Get("enabled"); enabledStr != "" && enabledStr != "all" {
 		if enabledStr == "true" {
 			conds = append(conds, "enabled=TRUE")
 		} else if enabledStr == "false" {
@@ -65,10 +64,7 @@ func (s *Server) sources(w http.ResponseWriter, r *http.Request) error {
 		args = append(args, "%"+escaped+"%", "%"+escaped+"%")
 	}
 
-	whereClause := ""
-	if len(conds) > 0 {
-		whereClause = " WHERE " + strings.Join(conds, " AND ")
-	}
+	whereClause := " WHERE " + strings.Join(conds, " AND ")
 
 	pageStr := r.URL.Query().Get("page")
 	if pageStr != "" {
@@ -107,9 +103,6 @@ func (s *Server) sources(w http.ResponseWriter, r *http.Request) error {
 			if err = rows.Scan(&v.ID, &v.Name, &v.URL, &v.Group, &v.Enabled, &v.Rule, &v.UpdatedAt); err != nil {
 				return err
 			}
-			if current(r).Role != "admin" {
-				v.Rule = nil
-			}
 			list = append(list, v)
 		}
 		if err = rows.Err(); err != nil {
@@ -137,9 +130,6 @@ func (s *Server) sources(w http.ResponseWriter, r *http.Request) error {
 		if e = rows.Scan(&v.ID, &v.Name, &v.URL, &v.Group, &v.Enabled, &v.Rule, &v.UpdatedAt); e != nil {
 			return e
 		}
-		if current(r).Role != "admin" {
-			v.Rule = nil
-		}
 		list = append(list, v)
 	}
 	if e = rows.Err(); e != nil {
@@ -149,7 +139,7 @@ func (s *Server) sources(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 func (s *Server) sourceGroups(w http.ResponseWriter, r *http.Request) error {
-	rows, err := s.db.QueryContext(r.Context(), "SELECT DISTINCT group_name FROM sources WHERE group_name IS NOT NULL AND group_name!='' ORDER BY group_name")
+	rows, err := s.db.QueryContext(r.Context(), "SELECT DISTINCT group_name FROM sources WHERE user_id=? AND group_name IS NOT NULL AND group_name!='' ORDER BY group_name", current(r).ID)
 	if err != nil {
 		return err
 	}
@@ -165,6 +155,7 @@ func (s *Server) sourceGroups(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 func (s *Server) batchSources(w http.ResponseWriter, r *http.Request) error {
+	uid := current(r).ID
 	var body struct {
 		IDs    []string `json:"ids"`
 		Action string   `json:"action"`
@@ -188,39 +179,39 @@ func (s *Server) batchSources(w http.ResponseWriter, r *http.Request) error {
 	affected := 0
 	switch body.Action {
 	case "enable":
-		stmt, err := tx.PrepareContext(r.Context(), "UPDATE sources SET enabled=TRUE WHERE id=?")
+		stmt, err := tx.PrepareContext(r.Context(), "UPDATE sources SET enabled=TRUE WHERE id=? AND user_id=?")
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 		for _, sid := range body.IDs {
-			if res, err := stmt.ExecContext(r.Context(), sid); err == nil {
+			if res, err := stmt.ExecContext(r.Context(), sid, uid); err == nil {
 				if n, _ := res.RowsAffected(); n > 0 {
 					affected++
 				}
 			}
 		}
 	case "disable":
-		stmt, err := tx.PrepareContext(r.Context(), "UPDATE sources SET enabled=FALSE WHERE id=?")
+		stmt, err := tx.PrepareContext(r.Context(), "UPDATE sources SET enabled=FALSE WHERE id=? AND user_id=?")
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 		for _, sid := range body.IDs {
-			if res, err := stmt.ExecContext(r.Context(), sid); err == nil {
+			if res, err := stmt.ExecContext(r.Context(), sid, uid); err == nil {
 				if n, _ := res.RowsAffected(); n > 0 {
 					affected++
 				}
 			}
 		}
 	case "delete":
-		stmt, err := tx.PrepareContext(r.Context(), "DELETE FROM sources WHERE id=?")
+		stmt, err := tx.PrepareContext(r.Context(), "DELETE FROM sources WHERE id=? AND user_id=?")
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 		for _, sid := range body.IDs {
-			if res, err := stmt.ExecContext(r.Context(), sid); err == nil {
+			if res, err := stmt.ExecContext(r.Context(), sid, uid); err == nil {
 				if n, _ := res.RowsAffected(); n > 0 {
 					affected++
 				}
@@ -331,6 +322,7 @@ func (s *Server) importSources(w http.ResponseWriter, r *http.Request) error {
 		parsed = append(parsed, it.source)
 	}
 
+	uid := current(r).ID
 	tx, e := s.db.BeginTx(r.Context(), nil)
 	if e != nil {
 		return e
@@ -340,19 +332,19 @@ func (s *Server) importSources(w http.ResponseWriter, r *http.Request) error {
 	for _, v := range parsed {
 		var existing string
 		sourceKey := digest(v.URL)
-		e = tx.QueryRowContext(r.Context(), "SELECT id FROM sources WHERE source_key=?", sourceKey).Scan(&existing)
+		e = tx.QueryRowContext(r.Context(), "SELECT id FROM sources WHERE user_id=? AND source_key=?", uid, sourceKey).Scan(&existing)
 		if e == nil {
 			if !body.Overwrite {
 				skipped++
 				continue
 			}
-			_, e = tx.ExecContext(r.Context(), "UPDATE sources SET name=?,url=?,group_name=?,enabled=?,rule=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", v.Name, v.URL, v.Group, v.Enabled, string(v.Rule), existing)
+			_, e = tx.ExecContext(r.Context(), "UPDATE sources SET name=?,url=?,group_name=?,enabled=?,rule=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?", v.Name, v.URL, v.Group, v.Enabled, string(v.Rule), existing, uid)
 			if e != nil {
 				return e
 			}
 			updated++
 		} else if errors.Is(e, sql.ErrNoRows) {
-			_, e = tx.ExecContext(r.Context(), "INSERT INTO sources(id,source_key,name,url,group_name,enabled,rule) VALUES(?,?,?,?,?,?,?)", v.ID, sourceKey, v.Name, v.URL, v.Group, v.Enabled, string(v.Rule))
+			_, e = tx.ExecContext(r.Context(), "INSERT INTO sources(id,user_id,source_key,name,url,group_name,enabled,rule) VALUES(?,?,?,?,?,?,?,?)", v.ID, uid, sourceKey, v.Name, v.URL, v.Group, v.Enabled, string(v.Rule))
 			if e != nil {
 				return e
 			}
@@ -374,7 +366,8 @@ func (s *Server) importSources(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 func (s *Server) updateSource(w http.ResponseWriter, r *http.Request) error {
-	old, e := s.source(r.Context(), r.PathValue("id"), false)
+	uid := current(r).ID
+	old, e := s.source(r.Context(), uid, r.PathValue("id"), false)
 	if e != nil {
 		return e
 	}
@@ -417,7 +410,7 @@ func (s *Server) updateSource(w http.ResponseWriter, r *http.Request) error {
 	obj["bookSourceGroup"] = old.Group
 	obj["enabled"] = old.Enabled
 	old.Rule, _ = json.Marshal(obj)
-	_, e = s.db.ExecContext(r.Context(), "UPDATE sources SET source_key=?,name=?,url=?,group_name=?,enabled=?,rule=? WHERE id=?", digest(old.URL), old.Name, old.URL, old.Group, old.Enabled, string(old.Rule), old.ID)
+	_, e = s.db.ExecContext(r.Context(), "UPDATE sources SET source_key=?,name=?,url=?,group_name=?,enabled=?,rule=? WHERE id=? AND user_id=?", digest(old.URL), old.Name, old.URL, old.Group, old.Enabled, string(old.Rule), old.ID, uid)
 	if e != nil {
 		return e
 	}
@@ -426,7 +419,7 @@ func (s *Server) updateSource(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 func (s *Server) deleteSource(w http.ResponseWriter, r *http.Request) error {
-	res, e := s.db.ExecContext(r.Context(), "DELETE FROM sources WHERE id=?", r.PathValue("id"))
+	res, e := s.db.ExecContext(r.Context(), "DELETE FROM sources WHERE id=? AND user_id=?", r.PathValue("id"), current(r).ID)
 	if e != nil {
 		return e
 	}
@@ -451,7 +444,7 @@ func (s *Server) remoteSource(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 func (s *Server) checkSource(w http.ResponseWriter, r *http.Request) error {
-	v, e := s.source(r.Context(), r.PathValue("id"), false)
+	v, e := s.source(r.Context(), current(r).ID, r.PathValue("id"), false)
 	if e != nil {
 		return e
 	}
@@ -489,6 +482,7 @@ func (s *Server) searchBooks(w http.ResponseWriter, r *http.Request) error {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
+	uid := current(r).ID
 	sources := []Source{}
 	seen := map[string]bool{}
 	for _, sid := range body.SourceIDs {
@@ -496,7 +490,7 @@ func (s *Server) searchBooks(w http.ResponseWriter, r *http.Request) error {
 			continue
 		}
 		seen[sid] = true
-		v, e := s.source(ctx, sid, true)
+		v, e := s.source(ctx, uid, sid, true)
 		if e != nil {
 			return e
 		}
@@ -567,6 +561,7 @@ func (s *Server) searchBooksStream(w http.ResponseWriter, r *http.Request) error
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
+	uid := current(r).ID
 	sources := []Source{}
 	seen := map[string]bool{}
 	for _, sid := range body.SourceIDs {
@@ -574,7 +569,7 @@ func (s *Server) searchBooksStream(w http.ResponseWriter, r *http.Request) error
 			continue
 		}
 		seen[sid] = true
-		v, e := s.source(ctx, sid, true)
+		v, e := s.source(ctx, uid, sid, true)
 		if e == nil {
 			sources = append(sources, v)
 		}
@@ -706,6 +701,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 func (s *Server) deduplicateSources(w http.ResponseWriter, r *http.Request) error {
+	uid := current(r).ID
 	var body struct {
 		Mode string `json:"mode"`
 	}
@@ -722,13 +718,13 @@ func (s *Server) deduplicateSources(w http.ResponseWriter, r *http.Request) erro
 
 	deletedIDs := make(map[string]bool)
 
-	// 1. 同 source_key / URL 规范化重复清理：保留最新 updated_at
+	// 1. 同用户下同 source_key / URL 规范化重复清理：保留最新 updated_at
 	rows, err := tx.QueryContext(r.Context(), `
 		SELECT s1.id 
 		FROM sources s1
-		JOIN sources s2 ON s1.source_key = s2.source_key AND s1.id != s2.id
-		WHERE s1.updated_at < s2.updated_at OR (s1.updated_at = s2.updated_at AND s1.id < s2.id)
-	`)
+		JOIN sources s2 ON s1.user_id = s2.user_id AND s1.source_key = s2.source_key AND s1.id != s2.id
+		WHERE s1.user_id = ? AND (s1.updated_at < s2.updated_at OR (s1.updated_at = s2.updated_at AND s1.id < s2.id))
+	`, uid)
 	if err == nil {
 		for rows.Next() {
 			var dupID string
@@ -739,14 +735,14 @@ func (s *Server) deduplicateSources(w http.ResponseWriter, r *http.Request) erro
 		rows.Close()
 	}
 
-	// 2. 如果包含 name 模式，同名源保留最新更新记录
+	// 2. 如果包含 name 模式，当前用户同名源保留最新更新记录
 	if body.Mode == "name" || body.Mode == "all" {
 		nameRows, err := tx.QueryContext(r.Context(), `
 			SELECT s1.id
 			FROM sources s1
-			JOIN sources s2 ON s1.name = s2.name AND s1.id != s2.id
-			WHERE s1.updated_at < s2.updated_at OR (s1.updated_at = s2.updated_at AND s1.id < s2.id)
-		`)
+			JOIN sources s2 ON s1.user_id = s2.user_id AND s1.name = s2.name AND s1.id != s2.id
+			WHERE s1.user_id = ? AND (s1.updated_at < s2.updated_at OR (s1.updated_at = s2.updated_at AND s1.id < s2.id))
+		`, uid)
 		if err == nil {
 			for nameRows.Next() {
 				var dupID string
@@ -760,13 +756,14 @@ func (s *Server) deduplicateSources(w http.ResponseWriter, r *http.Request) erro
 
 	cleanedCount := 0
 	if len(deletedIDs) > 0 {
-		ids := make([]any, 0, len(deletedIDs))
+		ids := make([]any, 0, len(deletedIDs)+1)
+		ids = append(ids, uid)
 		placeholders := make([]string, 0, len(deletedIDs))
 		for id := range deletedIDs {
 			ids = append(ids, id)
 			placeholders = append(placeholders, "?")
 		}
-		delQ := "DELETE FROM sources WHERE id IN (" + strings.Join(placeholders, ",") + ")"
+		delQ := "DELETE FROM sources WHERE user_id=? AND id IN (" + strings.Join(placeholders, ",") + ")"
 		res, err := tx.ExecContext(r.Context(), delQ, ids...)
 		if err != nil {
 			return err
@@ -780,7 +777,7 @@ func (s *Server) deduplicateSources(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	var totalRemaining int
-	_ = s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM sources").Scan(&totalRemaining)
+	_ = s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM sources WHERE user_id=?", uid).Scan(&totalRemaining)
 
 	s.audit(r, "sources.deduplicate", fmt.Sprintf("mode=%s, cleaned=%d, remaining=%d", body.Mode, cleanedCount, totalRemaining))
 	respond(w, map[string]any{

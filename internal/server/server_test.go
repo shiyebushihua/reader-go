@@ -199,3 +199,21 @@ func TestSetupRequiresValidToken(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+func TestUserScopedSources(t *testing.T) {
+	s, m := testServer(t)
+	// Regular non-admin user can import their own book source and cannot delete another user's source
+	session(m, "user", false)
+	m.ExpectBegin()
+	m.ExpectQuery("SELECT id FROM sources WHERE user_id=\\? AND source_key=\\?").WithArgs("user1", digest("https://example.com")).WillReturnError(sql.ErrNoRows)
+	m.ExpectExec("INSERT INTO sources\\(id,user_id,source_key,name,url,group_name,enabled,rule\\)").WithArgs(sqlmock.AnyArg(), "user1", digest("https://example.com"), "个人源", "https://example.com", "", true, sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	m.ExpectCommit()
+	m.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(1, 1))
+	assertStatus(t, request(s, "POST", "/api/v1/sources/import", `{"sources":[{"bookSourceName":"个人源","bookSourceUrl":"https://example.com"}],"overwrite":false}`, true, true), 200)
+
+	session(m, "user", false)
+	m.ExpectExec("DELETE FROM sources WHERE id=\\? AND user_id=\\?").WithArgs("other-user-source", "user1").WillReturnResult(sqlmock.NewResult(0, 0))
+	assertStatus(t, request(s, "DELETE", "/api/v1/sources/other-user-source", "", true, true), 404)
+	if e := m.ExpectationsWereMet(); e != nil {
+		t.Fatal(e)
+	}
+}

@@ -590,7 +590,7 @@ onUnmounted(() => {
 
       <p v-if="loading" role="status" class="muted">正在读取可用书源…</p>
       <p v-else-if="!enabled.length" class="muted">
-        暂无可用书源。请在管理面板导入并启用书源。
+        暂无可用书源。请前往 <a href="#/sources" style="color: var(--accent); font-weight: 600;">我的书源</a> 导入并启用属于你的书源。
       </p>
     </div>
   </form>
