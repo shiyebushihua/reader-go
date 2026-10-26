@@ -265,12 +265,14 @@ func insertBook(ctx context.Context, tx *sql.Tx, uid string, b Book, identity st
 	_, e := tx.ExecContext(ctx, "INSERT INTO books(id,user_id,title,author,cover,intro,kind,source_id,url,identity_hash) VALUES(?,?,?,?,?,?,?,?,?,?)", b.ID, uid, clip(b.Title, 500), clip(b.Author, 250), b.Cover, b.Intro, b.Kind, sid, b.URL, identity)
 	return e
 }
+
 type chapterRecord struct {
 	ID      string
 	Ordinal int
 	Title   string
 	URL     string
 }
+
 func batchInsertChapterRecords(ctx context.Context, tx *sql.Tx, bookID string, records []chapterRecord) error {
 	const batchSize = 100
 	for i := 0; i < len(records); i += batchSize {
@@ -507,6 +509,9 @@ func (s *Server) changeBookSource(w http.ResponseWriter, r *http.Request) error 
 	if e != nil {
 		return e
 	}
+	if b.Kind != "online" {
+		return fail(400, "LOCAL_BOOK", "本地导入书籍不支持在线换源")
+	}
 	src, e := s.source(r.Context(), req.SourceID, true)
 	if e != nil {
 		return e
@@ -528,6 +533,13 @@ func (s *Server) changeBookSource(w http.ResponseWriter, r *http.Request) error 
 	var lock string
 	if e = tx.QueryRowContext(r.Context(), "SELECT id FROM books WHERE id=? AND user_id=? FOR UPDATE", b.ID, current(r).ID).Scan(&lock); e != nil {
 		return e
+	}
+	identity := digest(src.ID + "\n" + req.URL)
+	var dupID string
+	if err := tx.QueryRowContext(r.Context(), "SELECT id FROM books WHERE user_id=? AND identity_hash=? AND id!=?", current(r).ID, identity, b.ID).Scan(&dupID); err == nil {
+		return fail(409, "DUPLICATE", "该书源的同一本书已在书架中")
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
 	}
 
 	currentTitle := strings.TrimSpace(req.CurrentChapterTitle)
@@ -556,7 +568,6 @@ func (s *Server) changeBookSource(w http.ResponseWriter, r *http.Request) error 
 	if newIntro == "" {
 		newIntro = detail.Intro
 	}
-	identity := digest(src.ID + "\n" + req.URL)
 	if _, e = tx.ExecContext(r.Context(), "UPDATE books SET source_id=?,url=?,identity_hash=?,kind='online',cover=?,intro=? WHERE id=?", src.ID, req.URL, identity, newCover, newIntro, b.ID); e != nil {
 		return e
 	}

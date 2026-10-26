@@ -174,3 +174,20 @@ test('mobile shelf keeps resume action and filters in compact rows', async () =>
   assert.match(app, /<details[^>]*class="mobile-account-menu"/)
   assert.match(app, /<summary aria-label="账户菜单">/)
 })
+
+test('shelf supports direct book removal with offline cache cleanup and preserves pagination', async () => {
+  const library = await readFile(new URL('../src/components/LibraryView.vue', import.meta.url), 'utf8')
+  assert.match(library, /const pageSize = ref\(5\)/)
+  assert.match(library, /removeBookCache/)
+  assert.match(library, /book-remove-btn/)
+  assert.match(library, /@click\.stop\.prevent="removeBook\(book\)"/)
+})
+
+test('horizontal slide pagination prevents mid-page overlap and scroll step advances a full page', async () => {
+  const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
+  const reader = await readFile(new URL('../src/components/ReaderView.vue', import.meta.url), 'utf8')
+  assert.match(css, /\.reading-scroll\.mode-slide\s*\{[^}]*touch-action:\s*pan-y/)
+  assert.match(reader, /slideAnimating/)
+  assert.match(reader, /getScrollPageStep/)
+  assert.doesNotMatch(reader, /scroller\.value\.clientHeight \* 0\.8/)
+})

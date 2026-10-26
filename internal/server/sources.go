@@ -60,8 +60,9 @@ func (s *Server) sources(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	if kw := strings.TrimSpace(r.URL.Query().Get("query")); kw != "" {
-		conds = append(conds, "(name LIKE ? OR url LIKE ?)")
-		args = append(args, "%"+kw+"%", "%"+kw+"%")
+		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(kw)
+		conds = append(conds, `(name LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\')`)
+		args = append(args, "%"+escaped+"%", "%"+escaped+"%")
 	}
 
 	whereClause := ""
@@ -785,6 +786,9 @@ func (s *Server) deduplicateSources(w http.ResponseWriter, r *http.Request) erro
 	respond(w, map[string]any{
 		"cleaned":   cleanedCount,
 		"remaining": totalRemaining,
+		"removed":   cleanedCount,
+		"retained":  totalRemaining,
+		"total":     cleanedCount + totalRemaining,
 		"mode":      body.Mode,
 	})
 	return nil

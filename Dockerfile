@@ -1,19 +1,19 @@
-FROM node:22-bookworm-slim AS frontend
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS frontend
 WORKDIR /src/web
 COPY web/package*.json ./
 RUN npm ci
 COPY web/ ./
 RUN npm test && npm run build
 
-FROM golang:1.24-bookworm AS backend
+FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS backend
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=frontend /src/web/dist/ ./cmd/reader/static/
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
-RUN go test ./... && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/reader ./cmd/reader
+ARG TARGETOS
+ARG TARGETARCH
+RUN go test ./... && CGO_ENABLED=0 GOOS=${TARGETOS:-$(go env GOOS)} GOARCH=${TARGETARCH:-$(go env GOARCH)} go build -trimpath -ldflags="-s -w" -o /out/reader ./cmd/reader
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* && useradd --uid 10001 --create-home reader && mkdir -p /data/books /data/tmp && chown -R reader:reader /data

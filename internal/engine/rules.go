@@ -393,10 +393,17 @@ func cleanContent(text, replaceRegex string) (string, error) {
 	if strings.TrimSpace(replaceRegex) == "" {
 		return text, nil
 	}
-	for _, line := range strings.Split(replaceRegex, "\n") {
+	lines := strings.Split(replaceRegex, "\n")
+	if len(lines) > 100 {
+		return "", fmt.Errorf("replaceRegex exceeds 100 rules")
+	}
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
+		}
+		if len(line) > 2048 {
+			return "", fmt.Errorf("replaceRegex rule exceeds 2048 bytes")
 		}
 		if err := supported(line); err != nil {
 			return "", err

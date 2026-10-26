@@ -192,3 +192,10 @@ func TestInvalidSetting(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+func TestSetupRequiresValidToken(t *testing.T) {
+	s, m := testServer(t)
+	assertStatus(t, request(s, "POST", "/api/v1/setup", `{"username":"admin","password":"password1234","setupToken":"short"}`, false, false), 403)
+	if e := m.ExpectationsWereMet(); e != nil {
+		t.Fatal(e)
+	}
+}

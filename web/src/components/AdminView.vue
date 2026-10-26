@@ -165,10 +165,13 @@ function handleAuditSizeChange() {
 async function deduplicateSources() {
   if (!confirm('确定执行智能书源去重吗？系统将自动清理 URL 规范化后重复以及同名冗余的历史书源，并保留最新版本。')) return
   await action(async () => {
-    const res = await api<{ removed: number; retained: number; total: number }>('/admin/sources/deduplicate', 'POST')
+    const res = await api<{ cleaned?: number; remaining?: number; removed?: number; retained?: number; total?: number }>('/admin/sources/deduplicate', 'POST')
+    const removed = res.cleaned ?? res.removed ?? 0
+    const retained = res.remaining ?? res.retained ?? 0
+    const total = res.total ?? (removed + retained)
     sourcePage.value = 1
     await loadSources()
-    notice.value = `智能去重完成：已自动清理 ${res.removed} 个重复书源，当前保留 ${res.retained} 个唯一有效书源（扫描前共 ${res.total} 个）。`
+    notice.value = `智能去重完成：已自动清理 ${removed} 个重复书源，当前保留 ${retained} 个唯一有效书源（扫描前共 ${total} 个）。`
   }, '')
 }
 function switchTab(value: string) {
@@ -367,15 +370,22 @@ function handleFilterChange() {
   loadSources()
 }
 
-function exportSources() {
-  const payload = sources.value.map(s => s.rule || {})
-  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }))
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `readergo-sources-page${sourcePage.value}.json`
-  a.click()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
-  notice.value = '当前页书源 JSON 已导出，请妥善保管规则。'
+async function exportSources() {
+  await action(async () => {
+    const queryParams = new URLSearchParams()
+    if (sourceGroup.value) queryParams.set('group', sourceGroup.value)
+    if (sourceQuery.value.trim()) queryParams.set('query', sourceQuery.value.trim())
+    if (sourceEnabledFilter.value !== 'all') queryParams.set('enabled', sourceEnabledFilter.value)
+    const qs = queryParams.toString()
+    const allSources = (await api<Source[]>(qs ? `/sources?${qs}` : '/sources')) || sources.value
+    const payload = allSources.map(s => s.rule || {})
+    const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `readergo-sources-${payload.length}.json`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }, '书源 JSON 已导出，请妥善保管规则。')
 }
 
 async function checkSource() {
@@ -608,7 +618,7 @@ onMounted(load)
             <Sparkles :size="16" />智能去重
           </button>
           <button :disabled="busy || !sources.length" @click="exportSources">
-            <Download :size="16" />导出当前页
+            <Download :size="16" />导出书源
           </button>
           <button class="primary" :disabled="busy" @click="importOpen = !importOpen">
             <Plus :size="17" />导入书源

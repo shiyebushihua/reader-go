@@ -1,26 +1,28 @@
-# 阅间 · Reader Go
+# Reader Go (阅间)
 
-Go + Vue 3 + TypeScript + MySQL 的自托管阅读服务，当前版本 **v0.0.5**。Docker 从源码构建前端并嵌入 Go 程序，运行时不需要 Node 或 JVM。
+English | [简体中文](README_ZH.md)
 
-## 功能
+A self-hosted reading service built with Go + Vue 3 + TypeScript + MySQL, currently at **v0.0.6**. Docker builds the frontend from source and embeds it into a single Go binary—no Node.js or JVM is required at runtime.
 
-- 私人书架、搜索、TXT/EPUB 导入、书签、阅读进度与分组。
-- 手机紧凑书架、主题/字体/行距设置、上下滚动与左右翻页、换源。
-- IndexedDB 书籍/章节离线缓存（不等于完整离线 PWA）。
-- 书源管理、流式搜索、管理员用户管理与审计。
-- 首次令牌初始化，无公开注册，无默认管理员账号或密码。
-- 登录管理员后，连续点击版本号 5 次解锁管理入口；接口仍校验管理员权限。
+## Features
 
-书源引擎不保证兼容所有 Legado 规则，详见 [ENGINE_NOTES.md](ENGINE_NOTES.md)。EPUB 转换为纯文本，不保留完整排版。阅读进度为章节相对位置。仅导入有合法使用权的内容。
+- Personal bookshelf, book search, TXT/EPUB import, bookmarks, reading progress sync, and shelf groups.
+- Compact mobile bookshelf, theme/font/line-spacing customization, vertical scroll & horizontal slide pagination, and book source switching.
+- IndexedDB offline book & chapter caching (note: not a full offline PWA).
+- Book source management, streaming search (SSE), admin user management, and audit logging.
+- First-run setup token bootstrap, no public registration, and no default admin credentials.
+- After logging in as an administrator, click the version badge 5 times consecutively to unlock the admin console entry; backend APIs strictly enforce admin authorization regardless.
 
-## 从 Git 克隆部署（Linux / CentOS / 1Panel）
+The book source engine does not guarantee compatibility with all Legado rules; see [ENGINE_NOTES.md](ENGINE_NOTES.md) for details. EPUB files are normalized into safe plain text and do not preserve complex formatting or images. Reading progress is stored as a relative ratio within the chapter. Only import content for which you hold legal usage rights.
 
-### 1. 准备环境
+## Deployment from Git Clone (Linux / CentOS / 1Panel)
 
-- Docker Engine 和 Docker Compose v2（`docker compose version`）。
-- 可访问的外部 MySQL 8.0+，提前创建 UTF-8 数据库及专用账号。初始化时账号需要该库的建表、索引和读写权限。
-- 服务器能访问 Docker Hub、npm registry、Go module proxy。无需宿主机安装 Go/Node。
-- 示例域名和数据库账号仅为占位值，必须按自己的环境填写。
+### 1. Prerequisites
+
+- Docker Engine and Docker Compose v2 (`docker compose version`).
+- A reachable external MySQL 8.0+ instance with a pre-created UTF-8 (`utf8mb4`) database and dedicated user account. During migration, the account requires table creation, index, and read/write privileges on that database.
+- Outbound access to Docker Hub, npm registry, and Go module proxy during image build. Neither Go nor Node.js needs to be installed on the host.
+- Example domains and database accounts below are placeholders—replace them with your actual environment values.
 
 ```bash
 git clone https://github.com/shiyebushihua/reader-go.git
@@ -30,23 +32,23 @@ mkdir -p secrets
 chmod 700 secrets
 ```
 
-编辑 `.env`，填写真实数据库地址、端口、库名、用户和浏览器访问来源。数据库密码不要写入仓库。
+Edit `.env` with your real database host, port, database name, user, and public browser origin. Never commit database passwords to the repository.
 
-在 Bash 中交互填写密码，避免出现在命令历史：
+Enter secrets interactively in Bash to avoid leaking them into shell history:
 
 ```bash
 read -r -s -p 'MySQL password: ' DB_PASSWORD; echo
 printf '%s' "$DB_PASSWORD" > secrets/db_password.txt
 unset DB_PASSWORD
 openssl rand -hex 32 > secrets/setup_token.txt
-# 容器以 UID/GID 10001 运行，Compose 文件型 secret 需要它能够读取。
+# The container runs as UID/GID 10001; file-based Compose secrets must be readable by it.
 sudo chown 10001:10001 secrets/*.txt
 sudo chmod 400 secrets/*.txt
 ```
 
-### 2. 选择访问方式（重要）
+### 2. Choose Your Access Mode (Important)
 
-**推荐 HTTPS 反向代理**，默认设置：
+**Recommended: HTTPS Reverse Proxy** (default configuration):
 
 ```dotenv
 READER_BIND_IP=127.0.0.1
@@ -55,9 +57,9 @@ READER_PUBLIC_URL=https://reader.example.com
 READER_COOKIE_SECURE=true
 ```
 
-将 HTTPS 站点代理到宿主机 `127.0.0.1:8081`，保留原始 Host，允许书籍上传并配置至少 120 秒读取超时。流式搜索需关闭代理响应缓冲。如果 1Panel/OpenResty 本身在容器内，`127.0.0.1` 指向代理容器，需另行配置共享网络或可达的宿主地址，不要直接照抄回环地址。
+Proxy your HTTPS site to host `127.0.0.1:8081`, preserve the original `Host` header, allow book upload body sizes (up to 100 MiB+), and configure at least a 120-second read timeout. Disable proxy response buffering for streaming search (`/api/v1/search/stream`). If 1Panel/OpenResty itself runs inside a container, `127.0.0.1` refers to the proxy container's loopback—configure a shared Docker network or reachable host address instead of copying `127.0.0.1` verbatim.
 
-**临时 HTTP 直连**（登录流量不加密，仅用于可信网络测试）：
+**Temporary Direct HTTP Access** (unencrypted login traffic; for trusted network testing only):
 
 ```dotenv
 READER_BIND_IP=0.0.0.0
@@ -66,11 +68,11 @@ READER_PUBLIC_URL=http://YOUR_SERVER_HOST:8081
 READER_COOKIE_SECURE=false
 ```
 
-把 `YOUR_SERVER_HOST` 替换成自己的地址，并在防火墙中限制访问范围。HTTP 不能使用 `READER_COOKIE_SECURE=true`，否则登录后 Cookie 不会发送，表现为“请先登录”。切回 HTTPS 时恢复 `true`。
+Replace `YOUR_SERVER_HOST` with your server address and restrict access via firewall. Do not set `READER_COOKIE_SECURE=true` over plain HTTP, otherwise the browser will refuse to send session cookies after login (resulting in repeated "Please log in" errors). Restore `true` when switching back to HTTPS.
 
-`READER_PUBLIC_URL` 必须与地址栏协议、主机和端口一致，不含路径。MySQL 地址不能填容器自己的 localhost。`READER_DB_TLS_MODE=true` 默认验证证书；`false` 仅用于可信隔离网络，`skip-verify` 不验证证书身份，不推荐生产使用。
+`READER_PUBLIC_URL` must match the exact scheme, host, and port in the browser address bar without a path suffix. Do not set the MySQL host to `localhost` unless MySQL is in the same network namespace as the container. `READER_DB_TLS_MODE=true` verifies server certificates by default; `false` is only for trusted isolated networks, and `skip-verify` disables certificate identity verification (not recommended for production).
 
-### 3. 构建、初始化和启动
+### 3. Build, Migrate, and Start
 
 ```bash
 docker compose config --quiet
@@ -82,15 +84,15 @@ docker compose logs --tail=100 reader
 curl -f http://127.0.0.1:8081/health/ready
 ```
 
-首次访问网站，使用以下命令读取初始化令牌，然后自行创建管理员账号和密码：
+On first visit, read the setup token using the command below and create your initial administrator account and password in the web UI:
 
 ```bash
 sudo cat secrets/setup_token.txt
 ```
 
-不提供默认账号。初始化完成后不能重复创建首位管理员。数据库不包含任何预置生产账号、书籍或书源。
+No default account is provided. Once initialized, the initial admin setup cannot be repeated. The database contains no preloaded production accounts, books, or book sources.
 
-### 更新与备份
+### Updating and Backups
 
 ```bash
 git pull --ff-only
@@ -99,13 +101,13 @@ docker compose run --rm reader migrate
 docker compose up -d
 ```
 
-更新前配套备份 MySQL 和 `reader_data` 数据卷。容器 `/data` 存放书籍正文；MySQL 存放用户、书架及进度。不要执行 `docker compose down -v`，它会删除数据卷。不要只备份数据库而丢弃正文卷。
+Back up both MySQL and the `reader_data` volume before updating. The container `/data` volume stores local book chapter files, while MySQL stores users, bookshelves, and reading progress. Never run `docker compose down -v`, as it deletes data volumes. Do not back up only the database while discarding the `/data` volume.
 
-`.env`、`secrets/`、`data/`、日志、二进制、镜像包及私钥均被 Git 和 Docker 构建上下文排除。不要使用 `git add -f` 上传这些文件。已经泄露的凭据应轮换，删除文件不能撤销既有泄露。
+`.env`, `secrets/`, `data/`, logs, binaries, image tarballs, and private keys are excluded from Git and the Docker build context. Never upload these files using `git add -f`. Any leaked credentials must be rotated immediately; deleting a file does not revoke an existing leak.
 
-## 本地开发与检查
+## Local Development and Verification
 
-需要 Go 1.24+、Node 22 和外部 MySQL。Windows 可运行 `./build.ps1`。
+Requires Go 1.24+, Node.js 22, and an external MySQL instance. On Windows, you can run `./build.ps1`.
 
 ```bash
 cd web
@@ -120,8 +122,8 @@ go vet ./...
 go build -o dist/reader ./cmd/reader
 ```
 
-Go 源码中的静态占位文件仅用于编译，不是可用 UI；必须先构建并复制前端，Dockerfile 会自动完成这些步骤。普通单元测试不连接数据库；真实数据库集成测试需要显式设置 `READER_INTEGRATION=1`，仅应针对专用测试库运行。
+The placeholder file in `cmd/reader/static` only satisfies Go compilation and is not a usable UI; you must build and copy the frontend first (which the `Dockerfile` handles automatically). Standard unit tests do not connect to a database; live MySQL integration tests require explicitly setting `READER_INTEGRATION=1` and should only be run against a dedicated test database.
 
-## 许可
+## License
 
-采用 GPL-3.0-or-later，见 [LICENSE](LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。功能及书源接口参考原 Reader 项目。真实书源由用户合法提供，不随代码发布。
+Licensed under **GPL-3.0-or-later**; see [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Features and book source interfaces reference the original Reader project. Book sources are provided lawfully by users and are not distributed with this repository.

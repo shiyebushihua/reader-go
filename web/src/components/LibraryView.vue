@@ -11,9 +11,11 @@ import {
   RefreshCw,
   Library,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Trash2
 } from 'lucide-vue-next'
 import { api, id, message } from '../api'
+import { removeBookCache } from '../offline'
 import type { Book } from '../types'
 import BookCover from './BookCover.vue'
 
@@ -22,6 +24,8 @@ const props = defineProps<{ importMode: boolean }>()
 const books = ref<Book[]>([])
 const loading = ref(true)
 const error = ref('')
+const notice = ref('')
+const removingId = ref('')
 const query = ref('')
 const group = ref('')
 const sort = ref('recent')
@@ -36,11 +40,15 @@ const pageSize = ref(5)
 
 const groups = computed(() => [...new Set(books.value.map(b => b.group).filter(Boolean))])
 
-const filtered = computed(() =>
-  books.value
-    .filter(b => (!group.value || b.group === group.value) && `${b.title} ${b.author}`.toLowerCase().includes(query.value.toLowerCase()))
-    .sort((a, b) => sort.value === 'title' ? a.title.localeCompare(b.title, 'zh-CN') : b.createdAt.localeCompare(a.createdAt))
-)
+const filtered = computed(() => {
+  const list = books.value.filter(
+    b => (!group.value || b.group === group.value) && `${b.title} ${b.author}`.toLowerCase().includes(query.value.toLowerCase())
+  )
+  if (sort.value === 'title') {
+    return [...list].sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'))
+  }
+  return list
+})
 
 const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize.value)))
 
@@ -106,6 +114,30 @@ async function upload() {
   }
 }
 
+async function removeBook(book: Book) {
+  if (removingId.value) return
+  if (!confirm(`确定从书架移除《${book.title}》吗？阅读进度、书签和本地文件也会被删除，此操作无法撤销。`)) return
+  removingId.value = book.id
+  error.value = ''
+  notice.value = ''
+  try {
+    await api(`/books/${id(book.id)}`, 'DELETE')
+    await removeBookCache(book.id)
+    books.value = books.value.filter(b => b.id !== book.id)
+    if (pagedBooks.value.length === 0 && page.value > 1) {
+      page.value = Math.max(1, totalPages.value)
+    }
+    notice.value = `《${book.title}》已从书架移除。`
+    setTimeout(() => {
+      if (notice.value.includes(book.title)) notice.value = ''
+    }, 3000)
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    removingId.value = ''
+  }
+}
+
 onMounted(() => {
   if (!props.importMode) load()
   else loading.value = false
@@ -124,6 +156,9 @@ onMounted(() => {
 
   <div v-if="error" class="error" role="alert">
     {{ error }} <button v-if="!importMode" class="text-button" @click="load">重试</button>
+  </div>
+  <div v-if="notice" class="success" role="status">
+    {{ notice }}
   </div>
 
   <template v-if="importMode">
@@ -233,6 +268,17 @@ onMounted(() => {
           :style="{ '--stagger': `${Math.min(index, 8) * 25}ms` }"
         >
           <BookCover :title="book.title" :kind="book.kind" :index="index" />
+          <button
+            type="button"
+            class="book-remove-btn"
+            :disabled="removingId === book.id"
+            :aria-label="`从书架移除 ${book.title}`"
+            title="从书架移除"
+            @click.stop.prevent="removeBook(book)"
+          >
+            <LoaderCircle v-if="removingId === book.id" class="spin" :size="14" />
+            <Trash2 v-else :size="14" />
+          </button>
           <div class="book-meta">
             <h3>{{ book.title }}</h3>
             <p>{{ book.author || '佚名' }}</p>

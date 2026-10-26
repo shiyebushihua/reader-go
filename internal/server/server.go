@@ -32,8 +32,9 @@ import (
 //go:embed schema.sql
 var schema string
 
-const Version = "0.0.5"
+const Version = "0.0.6"
 const DefaultVersion = Version
+
 type Config struct {
 	Addr, DataDir, PublicURL, SetupToken, AppVersion string
 	CookieSecure                                     bool
@@ -76,6 +77,9 @@ func LoadConfig() (Config, error) {
 	token, e := secret("READER_SETUP_TOKEN")
 	if e != nil {
 		return Config{}, e
+	}
+	if token != "" && len(token) < 24 {
+		return Config{}, errors.New("READER_SETUP_TOKEN must be at least 24 characters")
 	}
 	addr := env("READER_HTTP_ADDR", "")
 	if addr == "" {

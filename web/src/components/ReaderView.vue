@@ -84,6 +84,7 @@ const changeSourceSubmitting = ref(false)
 const changeSourceResults = ref<SearchResult[]>([])
 const changeSourceError = ref('')
 const sourcesMap = ref<Record<string, string>>({})
+const enabledSourceIds = ref<string[]>([])
 const lastDayTheme = ref('sepia')
 
 // Configurable Reading Parameters
@@ -255,20 +256,25 @@ async function loadSourcesList() {
     const srcs = await api<Source[]>('/sources')
     if (Array.isArray(srcs)) {
       const map: Record<string, string> = {}
-      for (const s of srcs) map[s.id] = s.name
+      const ids: string[] = []
+      for (const s of srcs) {
+        map[s.id] = s.name
+        if (s.enabled) ids.push(s.id)
+      }
       sourcesMap.value = map
+      enabledSourceIds.value = ids
     }
   } catch {}
 }
 
-function updateSlidePageMetrics() {
+function updateSlidePageMetrics(syncCurrentPage = true) {
   if (!scroller.value || prefs.pageMode !== 'slide') return
   const el = scroller.value
   const visibleWidth = el.clientWidth
   const paper = el.querySelector<HTMLElement>('.reading-paper')
   const style = getComputedStyle(el)
   if (paper && visibleWidth > 0) {
-    const height = Math.max(120, el.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom))
+    const height = Math.max(120, Math.floor(el.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)))
     const inset = prefs.adaptiveWidth ? 20 : Math.max(24, (visibleWidth - prefs.width) / 2)
     paper.style.setProperty('--slide-height', `${height}px`)
     paper.style.setProperty('--slide-inset', `${inset}px`)
@@ -276,21 +282,34 @@ function updateSlidePageMetrics() {
   const totalWidth = el.scrollWidth
   if (visibleWidth > 0) {
     totalSlidePages.value = Math.max(1, Math.round(totalWidth / visibleWidth))
-    slidePage.value = Math.min(totalSlidePages.value - 1, Math.max(0, Math.round(el.scrollLeft / visibleWidth)))
+    if (syncCurrentPage) {
+      slidePage.value = Math.min(totalSlidePages.value - 1, Math.max(0, Math.round(el.scrollLeft / visibleWidth)))
+    }
   }
 }
 
+let slideAnimating = false
+let slideLockTimer: ReturnType<typeof setTimeout> | undefined
+let slideSnapTimer: ReturnType<typeof setTimeout> | undefined
+
 async function restore(ratio: number) {
   restoring = true
+  clearTimeout(slideLockTimer)
+  clearTimeout(slideSnapTimer)
+  slideAnimating = false
   position.value = Math.max(0, Math.min(1, ratio))
   await nextTick()
   await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
   if (scroller.value) {
     if (prefs.pageMode === 'slide') {
-      updateSlidePageMetrics()
+      scroller.value.scrollTop = 0
+      updateSlidePageMetrics(false)
+      await nextTick()
+      updateSlidePageMetrics(false)
       const targetPage = Math.round(position.value * (totalSlidePages.value - 1))
       scrollToSlidePage(targetPage, false)
     } else {
+      scroller.value.scrollLeft = 0
       scroller.value.scrollTop = position.value * Math.max(0, scroller.value.scrollHeight - scroller.value.clientHeight)
     }
   }
@@ -299,12 +318,24 @@ async function restore(ratio: number) {
 
 function scrollToSlidePage(page: number, smooth = true) {
   if (!scroller.value) return
+  updateSlidePageMetrics(false)
   const p = Math.max(0, Math.min(totalSlidePages.value - 1, page))
   slidePage.value = p
+  scroller.value.scrollTop = 0
   const scrollTarget = p * scroller.value.clientWidth
+  clearTimeout(slideLockTimer)
+  clearTimeout(slideSnapTimer)
   if (smooth && prefs.transitionSpeed !== 'off') {
+    slideAnimating = true
     scroller.value.scrollTo({ left: scrollTarget, behavior: 'smooth' })
+    slideLockTimer = setTimeout(() => {
+      slideAnimating = false
+      if (scroller.value && prefs.pageMode === 'slide') {
+        scroller.value.scrollLeft = p * scroller.value.clientWidth
+      }
+    }, 420)
   } else {
+    slideAnimating = false
     scroller.value.scrollLeft = scrollTarget
   }
   if (totalSlidePages.value > 1) {
@@ -378,14 +409,28 @@ async function openChapter(chapterId: string, ratio = 0, save = true) {
   }
 }
 
+function getScrollPageStep(el: HTMLElement) {
+  const linePx = Math.max(24, Math.round(prefs.fontSize * prefs.lineHeight))
+  return Math.max(120, el.clientHeight - linePx)
+}
+
 function onScroll() {
-  if (restoring || chapterLoading.value || !content.value || !scroller.value) return
+  if (restoring || slideAnimating || chapterLoading.value || !content.value || !scroller.value) return
   const el = scroller.value
   if (prefs.pageMode === 'slide') {
-    const max = el.scrollWidth - el.clientWidth
-    position.value = max > 0 ? Math.min(1, Math.max(0, el.scrollLeft / max)) : 1
     if (el.clientWidth > 0) {
+      totalSlidePages.value = Math.max(1, Math.round(el.scrollWidth / el.clientWidth))
       slidePage.value = Math.min(totalSlidePages.value - 1, Math.max(0, Math.round(el.scrollLeft / el.clientWidth)))
+      position.value = totalSlidePages.value > 1 ? slidePage.value / (totalSlidePages.value - 1) : 1
+      clearTimeout(slideSnapTimer)
+      const alignedLeft = slidePage.value * el.clientWidth
+      if (Math.abs(el.scrollLeft - alignedLeft) > 2) {
+        slideSnapTimer = setTimeout(() => {
+          if (scroller.value && prefs.pageMode === 'slide' && !slideAnimating && !restoring) {
+            scroller.value.scrollLeft = slidePage.value * scroller.value.clientWidth
+          }
+        }, 120)
+      }
     }
   } else {
     const max = el.scrollHeight - el.clientHeight
@@ -402,6 +447,7 @@ function onSliderScrub(e: Event) {
   const ratio = parseFloat(target.value) / 100
   if (scroller.value) {
     if (prefs.pageMode === 'slide') {
+      updateSlidePageMetrics(false)
       const targetPage = Math.round(ratio * (totalSlidePages.value - 1))
       scrollToSlidePage(targetPage, false)
     } else {
@@ -426,7 +472,7 @@ async function prevPage() {
     }
   } else {
     if (scroller.value) {
-      const step = scroller.value.clientHeight * 0.8
+      const step = getScrollPageStep(scroller.value)
       if (scroller.value.scrollTop <= 10 && index.value > 0) {
         await openChapter(chapters.value[index.value - 1].id, 1)
       } else {
@@ -453,7 +499,7 @@ async function nextPage() {
       if (remaining <= 30 && index.value < chapters.value.length - 1) {
         await openChapter(chapters.value[index.value + 1].id, 0)
       } else {
-        const step = scroller.value.clientHeight * 0.8
+        const step = getScrollPageStep(scroller.value)
         scroller.value.scrollBy({ top: step, behavior: 'smooth' })
       }
     }
@@ -475,7 +521,7 @@ function onTouchEnd(e: TouchEvent) {
   const duration = Date.now() - touchStartTime
 
   // Horizontal swipe gesture detection
-  if (Math.abs(deltaX) > 42 && Math.abs(deltaX) > Math.abs(deltaY) * 1.3 && duration < 700) {
+  if (Math.abs(deltaX) > 30 && Math.abs(deltaX) > Math.abs(deltaY) * 1.2 && duration < 1200) {
     if (deltaX < 0) {
       // Swipe left -> Next Page / Next Chapter
       nextPage()
@@ -531,7 +577,18 @@ async function executeSearchSources() {
   changeSourceLoading.value = true
   changeSourceError.value = ''
   try {
-    const results = await api<SearchResult[]>('/search', 'POST', { keyword: changeSourceQuery.value.trim() })
+    if (!enabledSourceIds.value.length) {
+      await loadSourcesList()
+    }
+    const sourceIds = enabledSourceIds.value.slice(0, 50)
+    if (!sourceIds.length) {
+      changeSourceError.value = '当前暂无已启用的书源，请先在管理控制台导入并启用书源。'
+      return
+    }
+    const results = await api<SearchResult[]>('/search', 'POST', {
+      keyword: changeSourceQuery.value.trim(),
+      sourceIds
+    })
     changeSourceResults.value = results || []
   } catch (e) {
     changeSourceError.value = message(e)
@@ -804,6 +861,8 @@ onMounted(() => {
 onUnmounted(() => {
   active = false
   clearTimeout(timer)
+  clearTimeout(slideLockTimer)
+  clearTimeout(slideSnapTimer)
   window.removeEventListener('beforeunload', beforeUnload)
   window.removeEventListener('keydown', keydown)
   window.removeEventListener('resize', handleResize)

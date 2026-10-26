@@ -6,10 +6,12 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"readergo/internal/server"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -23,6 +25,21 @@ func main() {
 		os.Exit(1)
 	}
 }
+func healthcheckURL() string {
+	addr := strings.TrimSpace(os.Getenv("READER_HTTP_ADDR"))
+	if addr == "" {
+		if port := strings.TrimSpace(os.Getenv("READER_PORT")); port != "" {
+			addr = ":" + port
+		} else {
+			addr = ":8080"
+		}
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		port = "8080"
+	}
+	return "http://127.0.0.1:" + port + "/health/ready"
+}
 func run() error {
 	command := "serve"
 	if len(os.Args) > 1 {
@@ -30,7 +47,7 @@ func run() error {
 	}
 	if command == "healthcheck" {
 		client := http.Client{Timeout: 3 * time.Second}
-		resp, e := client.Get("http://127.0.0.1:8080/health/ready")
+		resp, e := client.Get(healthcheckURL())
 		if e != nil {
 			return e
 		}

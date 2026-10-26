@@ -56,6 +56,7 @@ func (s *Server) authenticate(r *http.Request) (User, string, error) {
 	return u, csrf, e
 }
 func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, u User) error {
+	_, _ = s.db.ExecContext(r.Context(), "DELETE FROM sessions WHERE expires_at <= UTC_TIMESTAMP() LIMIT 100")
 	token := id() + id()
 	csrf := id() + id()
 	_, e := s.db.ExecContext(r.Context(), "INSERT INTO sessions(token_hash,user_id,csrf,expires_at) VALUES(?,?,?,?)", digest(token), u.ID, csrf, time.Now().UTC().Add(7*24*time.Hour))
@@ -69,26 +70,47 @@ func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, u User) er
 func (s *Server) cookie(w http.ResponseWriter, name, value string, httpOnly bool, age int) {
 	http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/", HttpOnly: httpOnly, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteStrictMode, MaxAge: age})
 }
+func clientHost(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || host == "" {
+		return r.RemoteAddr
+	}
+	return host
+}
 func (s *Server) rateLimit(r *http.Request) bool {
-	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return s.rateLimitKey(clientHost(r))
+}
+func (s *Server) rateLimitKey(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
+	var oldestKey string
+	var oldestTime time.Time
 	for k, a := range s.attempts {
 		if now.After(a.Until) {
 			delete(s.attempts, k)
+			continue
+		}
+		if oldestKey == "" || a.Until.Before(oldestTime) {
+			oldestKey = k
+			oldestTime = a.Until
 		}
 	}
-	if len(s.attempts) > 10000 {
-		return false
+	if _, exists := s.attempts[key]; !exists && len(s.attempts) >= 10000 && oldestKey != "" {
+		delete(s.attempts, oldestKey)
 	}
-	a := s.attempts[host]
-	if a.Until.IsZero() {
-		a.Until = now.Add(time.Minute)
+	a := s.attempts[key]
+	if a.Until.IsZero() || now.After(a.Until) {
+		a = attempt{Count: 0, Until: now.Add(time.Minute)}
 	}
 	a.Count++
-	s.attempts[host] = a
+	s.attempts[key] = a
 	return a.Count <= 10
+}
+func (s *Server) clearRateLimit(key string) {
+	s.mu.Lock()
+	delete(s.attempts, key)
+	s.mu.Unlock()
 }
 func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) error {
 	var n int
@@ -106,10 +128,8 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) error {
 	if e := decode(w, r, &v); e != nil {
 		return e
 	}
-	if s.cfg.SetupToken != "" && len(s.cfg.SetupToken) >= 24 {
-		if !constantEqual(v.SetupToken, s.cfg.SetupToken) {
-			return fail(403, "SETUP_TOKEN", "初始化令牌不正确，请确认输入的令牌与服务端配置一致")
-		}
+	if len(s.cfg.SetupToken) < 24 || !constantEqual(v.SetupToken, s.cfg.SetupToken) {
+		return fail(403, "SETUP_TOKEN", "初始化令牌不正确，请确认输入的令牌与服务端配置一致")
 	}
 	if e := validCredentials(v.Username, v.Password); e != nil {
 		return e
@@ -150,12 +170,13 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
-	if !s.rateLimit(r) {
-		return fail(429, "RATE_LIMIT", "尝试次数过多，请稍后重试")
-	}
 	var v struct{ Username, Password string }
 	if e := decode(w, r, &v); e != nil {
 		return e
+	}
+	limitKey := clientHost(r) + "|" + strings.ToLower(strings.TrimSpace(v.Username))
+	if !s.rateLimitKey(limitKey) {
+		return fail(429, "RATE_LIMIT", "尝试次数过多，请稍后重试")
 	}
 	if len(v.Password) > 72 {
 		return fail(401, "LOGIN", "用户名或密码错误")
@@ -169,6 +190,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
 	if e != nil || u.Status != "active" || bcrypt.CompareHashAndPassword([]byte(hash), []byte(v.Password)) != nil {
 		return fail(401, "LOGIN", "用户名或密码错误")
 	}
+	s.clearRateLimit(limitKey)
 	if e = s.issueSession(w, r, u); e != nil {
 		return e
 	}
