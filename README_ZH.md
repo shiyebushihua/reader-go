@@ -2,27 +2,40 @@
 
 [English](README.md) | 简体中文
 
-Go + Vue 3 + TypeScript + MySQL 的自托管阅读服务，当前版本 **v0.0.6**。Docker 从源码构建前端并嵌入 Go 程序，运行时不需要 Node 或 JVM。
+Go + Vue 3 + TypeScript + MySQL 的自托管阅读服务，当前版本 **v0.0.6**。Docker 从源码构建前端并嵌入单个 Go 二进制程序，运行时不需要 Node.js 或 JVM。
 
 ## 功能
 
-- 私人书架、搜索、TXT/EPUB 导入、书签、阅读进度与分组。
-- 手机紧凑书架、主题/字体/行距设置、上下滚动与左右翻页、换源。
+- 私人书架、搜索、TXT/EPUB 导入、书签、阅读进度同步与书架分组。
+- 手机紧凑书架（适配 iOS / 移动端网页交互）、主题/字体/行距设置、上下滚动与左右滑动翻页、一键换源。
 - IndexedDB 书籍/章节离线缓存（不等于完整离线 PWA）。
-- 书源管理、流式搜索、管理员用户管理与审计。
+- 书源管理、SSE 流式搜索、管理员用户管理与操作审计。
 - 首次令牌初始化，无公开注册，无默认管理员账号或密码。
-- 登录管理员后，连续点击版本号 5 次解锁管理入口；接口仍校验管理员权限。
+- 登录管理员后，连续点击版本号 5 次解锁管理入口；后端接口仍严格校验管理员权限。
 
-书源引擎不保证兼容所有 Legado 规则，详见 [ENGINE_NOTES.md](ENGINE_NOTES.md)。EPUB 转换为纯文本，不保留完整排版。阅读进度为章节相对位置。仅导入有合法使用权的内容。
+书源引擎不保证兼容所有 Legado 规则，详见 [ENGINE_NOTES.md](ENGINE_NOTES.md)。EPUB 转换为纯文本，不保留完整排版与图片。阅读进度为章节内相对位置。仅导入有合法使用权的内容。
 
-## 从 Git 克隆部署（Linux / CentOS / 1Panel）
+---
 
-### 1. 准备环境
+## Docker 部署教程
 
-- Docker Engine 和 Docker Compose v2（`docker compose version`）。
-- 可访问的外部 MySQL 8.0+，提前创建 UTF-8 数据库及专用账号。初始化时账号需要该库的建表、索引和读写权限。
-- 服务器能访问 Docker Hub、npm registry、Go module proxy。无需宿主机安装 Go/Node。
-- 示例域名和数据库账号仅为占位值，必须按自己的环境填写。
+### 1. 环境准备与 MySQL 初始化
+
+- **Docker Engine**（`20.10+`）与 **Docker Compose v2**（`docker compose version`）。
+- **外部 MySQL 8.0+**：提前创建 `utf8mb4` 编码的数据库与专用账号，并授予该库建表、索引与读写权限：
+
+```sql
+CREATE DATABASE IF NOT EXISTS reader CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS 'reader'@'%' IDENTIFIED BY 'your_strong_db_password';
+GRANT ALL PRIVILEGES ON reader.* TO 'reader'@'%';
+FLUSH PRIVILEGES;
+```
+
+---
+
+### 2. 方式一：Docker Compose 编排部署（推荐）
+
+#### 第一步：克隆代码并生成密钥文件
 
 ```bash
 git clone https://github.com/shiyebushihua/reader-go.git
@@ -32,47 +45,55 @@ mkdir -p secrets
 chmod 700 secrets
 ```
 
-编辑 `.env`，填写真实数据库地址、端口、库名、用户和浏览器访问来源。数据库密码不要写入仓库。
-
-在 Bash 中交互填写密码，避免出现在命令历史：
+在 Bash 中交互式写入数据库密码和初始化令牌，避免泄露到命令历史中：
 
 ```bash
 read -r -s -p 'MySQL password: ' DB_PASSWORD; echo
 printf '%s' "$DB_PASSWORD" > secrets/db_password.txt
 unset DB_PASSWORD
+# 初始化令牌长度不少于 24 位（32 字节 hex 为 64 位）
 openssl rand -hex 32 > secrets/setup_token.txt
-# 容器以 UID/GID 10001 运行，Compose 文件型 secret 需要它能够读取。
+# 容器默认以 UID/GID 10001 运行，需赋予读取权限
 sudo chown 10001:10001 secrets/*.txt
 sudo chmod 400 secrets/*.txt
 ```
 
-### 2. 选择访问方式（重要）
+#### 第二步：修改 `.env` 配置文件
 
-**推荐 HTTPS 反向代理**，默认设置：
+**场景 A —— HTTPS 反向代理访问（生产环境推荐）**：
 
 ```dotenv
+READER_DB_HOST=mysql.example.internal
+READER_DB_PORT=3306
+READER_DB_NAME=reader
+READER_DB_USER=reader
+READER_DB_TLS_MODE=false
 READER_BIND_IP=127.0.0.1
 READER_PORT=8081
 READER_PUBLIC_URL=https://reader.example.com
 READER_COOKIE_SECURE=true
 ```
 
-将 HTTPS 站点代理到宿主机 `127.0.0.1:8081`，保留原始 Host，允许书籍上传并配置至少 120 秒读取超时。流式搜索需关闭代理响应缓冲。如果 1Panel/OpenResty 本身在容器内，`127.0.0.1` 指向代理容器，需另行配置共享网络或可达的宿主地址，不要直接照抄回环地址。
-
-**临时 HTTP 直连**（登录流量不加密，仅用于可信网络测试）：
+**场景 B —— 临时 HTTP IP 直连（仅限内网或测试环境）**：
 
 ```dotenv
+READER_DB_HOST=192.168.1.10
+READER_DB_PORT=3306
+READER_DB_NAME=reader
+READER_DB_USER=reader
+READER_DB_TLS_MODE=false
 READER_BIND_IP=0.0.0.0
 READER_PORT=8081
-READER_PUBLIC_URL=http://YOUR_SERVER_HOST:8081
+READER_PUBLIC_URL=http://192.168.1.20:8081
 READER_COOKIE_SECURE=false
 ```
 
-把 `YOUR_SERVER_HOST` 替换成自己的地址，并在防火墙中限制访问范围。HTTP 不能使用 `READER_COOKIE_SECURE=true`，否则登录后 Cookie 不会发送，表现为“请先登录”。切回 HTTPS 时恢复 `true`。
+> **重要注意事项**：
+> - `READER_PUBLIC_URL` 必须与浏览器地址栏中的协议（`http`/`https`）、域名/IP、端口完全一致，末尾不要带路径。
+> - 使用纯 HTTP 访问时，**必须设置 `READER_COOKIE_SECURE=false`**，否则浏览器不会携带登录 Cookie，会出现登录后仍提示“请先登录”。切回 HTTPS 后请恢复为 `true`。
+> - `READER_DB_HOST` 不要填 `localhost`（容器内的 `localhost` 指向容器自身）。
 
-`READER_PUBLIC_URL` 必须与地址栏协议、主机和端口一致，不含路径。MySQL 地址不能填容器自己的 localhost。`READER_DB_TLS_MODE=true` 默认验证证书；`false` 仅用于可信隔离网络，`skip-verify` 不验证证书身份，不推荐生产使用。
-
-### 3. 构建、初始化和启动
+#### 第三步：构建、迁移表结构并启动服务
 
 ```bash
 docker compose config --quiet
@@ -84,15 +105,144 @@ docker compose logs --tail=100 reader
 curl -f http://127.0.0.1:8081/health/ready
 ```
 
-首次访问网站，使用以下命令读取初始化令牌，然后自行创建管理员账号和密码：
+首次打开网页时，通过以下命令查看初始化令牌，在页面中创建首位管理员账号与密码：
 
 ```bash
 sudo cat secrets/setup_token.txt
 ```
 
-不提供默认账号。初始化完成后不能重复创建首位管理员。数据库不包含任何预置生产账号、书籍或书源。
+---
 
-### 更新与备份
+### 3. 方式二：单容器 `docker build` + `docker run` 部署
+
+如果不使用 Docker Compose，也可以直接使用 `docker` 命令构建并运行：
+
+```bash
+# 1. 构建镜像
+docker build -t reader-go:0.0.6 .
+
+# 2. 创建宿主机数据目录并授权给容器运行用户 (10001:10001)
+mkdir -p /opt/reader-go/data
+sudo chown -R 10001:10001 /opt/reader-go/data
+
+# 3. 执行数据库初始化迁移 (migrate)
+docker run --rm \
+  -e READER_DB_HOST=192.168.1.10 \
+  -e READER_DB_PORT=3306 \
+  -e READER_DB_NAME=reader \
+  -e READER_DB_USER=reader \
+  -e READER_DB_PASSWORD='your_strong_db_password' \
+  -e READER_DB_TLS_MODE=false \
+  -v /opt/reader-go/data:/data \
+  reader-go:0.0.6 migrate
+
+# 4. 启动常驻服务容器
+docker run -d \
+  --name reader-go \
+  --restart unless-stopped \
+  -p 127.0.0.1:8081:8080 \
+  -e READER_DB_HOST=192.168.1.10 \
+  -e READER_DB_PORT=3306 \
+  -e READER_DB_NAME=reader \
+  -e READER_DB_USER=reader \
+  -e READER_DB_PASSWORD='your_strong_db_password' \
+  -e READER_DB_TLS_MODE=false \
+  -e READER_SETUP_TOKEN="$(openssl rand -hex 32)" \
+  -e READER_PUBLIC_URL=https://reader.example.com \
+  -e READER_COOKIE_SECURE=true \
+  -v /opt/reader-go/data:/data \
+  reader-go:0.0.6
+```
+
+---
+
+### 4. 方式三：1Panel 面板离线镜像 `.tar` 包构建、导入与升级
+
+当云端服务器拉取 npm / Go 依赖较慢时，可在本地电脑构建好 `.tar` 镜像包，上传至 1Panel 面板一键导入升级：
+
+#### 1. 在本地导出离线镜像包
+
+```bash
+# 构建 x86_64 (linux/amd64) 服务器镜像包：
+docker buildx build --platform linux/amd64 -t reader-go:0.0.6 \
+  --output type=docker,name=reader-go:0.0.6,dest=reader-go-0.0.6-amd64.tar .
+
+# 或构建 ARM64 (linux/arm64) 服务器镜像包：
+docker buildx build --platform linux/arm64 -t reader-go:0.0.6 \
+  --output type=docker,name=reader-go:0.0.6,dest=reader-go-0.0.6-arm64.tar .
+```
+
+#### 2. 在 1Panel 中导入并升级版本
+
+1. 登录 **1Panel 面板** $\rightarrow$ **容器** $\rightarrow$ **镜像** $\rightarrow$ 点击 **导入镜像**，选择上传 `reader-go-0.0.6-amd64.tar`（或在服务器终端执行 `docker load -i reader-go-0.0.6-amd64.tar`）。
+2. 确认镜像列表中已出现 `reader-go:0.0.6`。
+3. 在 **容器 $\rightarrow$ 编排**（或服务器项目目录）中，确保 `compose.yaml` 的镜像版本为 `image: reader-go:0.0.6`，然后执行：
+   ```bash
+   docker compose run --rm reader migrate
+   docker compose up -d
+   ```
+
+---
+
+### 5. 反向代理配置示例（Nginx / OpenResty / 1Panel 网站）
+
+使用 Nginx 或 1Panel OpenResty 反代时，请放宽上传体积限制（用于导入 TXT/EPUB），并为流式搜索接口（`/api/v1/search/stream`）关闭代理缓冲：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8081;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    client_max_body_size 100m;
+    proxy_read_timeout 120s;
+    proxy_send_timeout 120s;
+}
+
+location /api/v1/search/stream {
+    proxy_pass http://127.0.0.1:8081;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    proxy_buffering off;
+    proxy_cache off;
+    chunked_transfer_encoding on;
+    proxy_read_timeout 120s;
+}
+```
+
+> 若 1Panel 的 OpenResty 运行在容器内，OpenResty 容器里的 `127.0.0.1` 指向其自身而非宿主机，请改为宿主机 Docker 网桥地址（如 `172.17.0.1:8081`）或配置共享容器网络。
+
+---
+
+### 6. 环境变量一览表
+
+| 变量名 | 默认值 | 必填 | 说明 |
+| :--- | :--- | :---: | :--- |
+| `READER_HTTP_ADDR` | `:8080` | 否 | 容器内部监听地址（如 `:8080` 或 `0.0.0.0:8080`）。 |
+| `READER_PORT` | `8081`（Compose） | 否 | `compose.yaml` 映射到宿主机的端口（未设置 `READER_HTTP_ADDR` 时也作为容器监听端口）。 |
+| `READER_BIND_IP` | `127.0.0.1` | 否 | `compose.yaml` 绑定的宿主机网卡地址。 |
+| `READER_DATA_DIR` | `/data` | 否 | 存放本地导入与缓存章节正文的目录（自动创建 `books/` 与 `tmp/`）。 |
+| `READER_PUBLIC_URL` | — | **是** | 浏览器访问的完整 Origin（含 `http://` 或 `https://`、域名/IP 与端口，不含路径），用于 CSRF 校验。 |
+| `READER_COOKIE_SECURE` | `true` | 否 | HTTPS 设为 `true`，HTTP 测试设为 `false`。 |
+| `READER_SETUP_TOKEN` / `READER_SETUP_TOKEN_FILE` | — | 首次初始化 | 首次创建管理员所需的初始化令牌（长度不少于 24 位）。 |
+| `READER_DB_HOST` | `127.0.0.1` | **是** | MySQL 主机地址。 |
+| `READER_DB_PORT` | `3306` | 否 | MySQL 端口。 |
+| `READER_DB_NAME` | — | **是** | MySQL 数据库名（需 `utf8mb4`）。 |
+| `READER_DB_USER` | — | **是** | MySQL 用户名。 |
+| `READER_DB_PASSWORD` / `READER_DB_PASSWORD_FILE` | — | **是** | MySQL 密码或密钥文件路径。 |
+| `READER_DB_TLS_MODE` | `true` | 否 | MySQL TLS 模式：`true`（校验证书）、`false`（可信内网关闭 TLS）或 `skip-verify`。 |
+| `READER_DB_CA_FILE` | — | 否 | 自定义 MySQL TLS 根证书 PEM 文件路径。 |
+
+---
+
+### 7. 日常更新与数据备份
 
 ```bash
 git pull --ff-only
@@ -101,9 +251,11 @@ docker compose run --rm reader migrate
 docker compose up -d
 ```
 
-更新前配套备份 MySQL 和 `reader_data` 数据卷。容器 `/data` 存放书籍正文；MySQL 存放用户、书架及进度。不要执行 `docker compose down -v`，它会删除数据卷。不要只备份数据库而丢弃正文卷。
+更新前请配套备份 MySQL 数据库和 `reader_data` 数据卷。容器 `/data` 存放书籍章节正文；MySQL 存放用户、书架及阅读进度。**切勿执行 `docker compose down -v`**，否则会删除数据卷。
 
-`.env`、`secrets/`、`data/`、日志、二进制、镜像包及私钥均被 Git 和 Docker 构建上下文排除。不要使用 `git add -f` 上传这些文件。已经泄露的凭据应轮换，删除文件不能撤销既有泄露。
+`.env`、`secrets/`、`data/`、日志、二进制、镜像包及私钥均已被 Git 和 Docker 构建上下文排除，请勿使用 `git add -f` 提交。
+
+---
 
 ## 本地开发与检查
 
