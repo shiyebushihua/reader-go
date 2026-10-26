@@ -19,16 +19,115 @@ Go + Vue 3 + TypeScript + MySQL 的自托管阅读服务，当前版本 **v0.0.6
 
 ## Docker 部署教程
 
-### 1. 环境准备与 MySQL 初始化
+### 1. 环境准备与 MySQL 初始化（完整建表 DDL）
 
 - **Docker Engine**（`20.10+`）与 **Docker Compose v2**（`docker compose version`）。
-- **外部 MySQL 8.0+**：提前创建 `utf8mb4` 编码的数据库与专用账号，并授予该库建表、索引与读写权限：
+- **外部 MySQL 8.0+**：提前创建 `utf8mb4` 编码的数据库与专用账号。
+- 您既可以通过 `reader migrate` 自动建表，也可以直接在 **1Panel 数据库面板 / Navicat / MySQL 命令行** 中导入项目根目录下的 [`sql/schema.sql`](sql/schema.sql) 或执行以下完整 DDL：
 
 ```sql
+-- 1. 创建数据库与专用账号
 CREATE DATABASE IF NOT EXISTS reader CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS 'reader'@'%' IDENTIFIED BY 'your_strong_db_password';
 GRANT ALL PRIVILEGES ON reader.* TO 'reader'@'%';
 FLUSH PRIVILEGES;
+
+USE reader;
+SET NAMES utf8mb4;
+
+-- 2. 完整表结构 DDL（同步保存在 sql/schema.sql 与 internal/server/schema.sql）
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INT PRIMARY KEY,
+  applied_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS users (
+  id CHAR(32) PRIMARY KEY,
+  username VARCHAR(64) NOT NULL UNIQUE,
+  password_hash VARCHAR(100) NOT NULL,
+  role VARCHAR(10) NOT NULL,
+  status VARCHAR(10) NOT NULL DEFAULT 'active',
+  must_change BOOLEAN NOT NULL DEFAULT TRUE,
+  settings JSON NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash CHAR(64) PRIMARY KEY,
+  user_id CHAR(32) NOT NULL,
+  csrf CHAR(64) NOT NULL,
+  expires_at DATETIME(6) NOT NULL,
+  INDEX (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS sources (
+  id CHAR(32) PRIMARY KEY,
+  source_key CHAR(64) NOT NULL UNIQUE,
+  name VARCHAR(255) NOT NULL,
+  url TEXT NOT NULL,
+  group_name VARCHAR(255) NOT NULL DEFAULT '',
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  rule JSON NOT NULL,
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS books (
+  id CHAR(32) PRIMARY KEY,
+  user_id CHAR(32) NOT NULL,
+  title VARCHAR(512) NOT NULL,
+  author VARCHAR(255) NOT NULL DEFAULT '',
+  cover TEXT NOT NULL,
+  intro MEDIUMTEXT NOT NULL,
+  kind VARCHAR(10) NOT NULL,
+  group_name VARCHAR(255) NOT NULL DEFAULT '',
+  source_id CHAR(32) NULL,
+  url TEXT NOT NULL,
+  identity_hash CHAR(64) NOT NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  UNIQUE (user_id, identity_hash),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS chapters (
+  id CHAR(32) PRIMARY KEY,
+  book_id CHAR(32) NOT NULL,
+  ordinal INT NOT NULL,
+  title VARCHAR(1024) NOT NULL,
+  url TEXT NOT NULL,
+  UNIQUE (book_id, ordinal),
+  FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS progress (
+  book_id CHAR(32) PRIMARY KEY,
+  chapter_id CHAR(32) NOT NULL,
+  position DOUBLE NOT NULL DEFAULT 0,
+  version BIGINT NOT NULL DEFAULT 1,
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS bookmarks (
+  id CHAR(32) PRIMARY KEY,
+  book_id CHAR(32) NOT NULL,
+  chapter_id CHAR(32) NOT NULL,
+  position DOUBLE NOT NULL,
+  note VARCHAR(1000) NOT NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  INDEX (book_id),
+  FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  actor VARCHAR(64) NOT NULL,
+  action VARCHAR(64) NOT NULL,
+  target VARCHAR(128) NOT NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+INSERT IGNORE INTO schema_migrations (version) VALUES (1);
 ```
 
 ---
