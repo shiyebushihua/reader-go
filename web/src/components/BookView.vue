@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, nextTick } from 'vue'
 import {
   ArrowLeft,
   BookOpen,
@@ -8,10 +8,14 @@ import {
   Search,
   ArrowRight,
   Download,
-  X
+  X,
+  Shuffle,
+  ArrowUpDown,
+  LocateFixed,
+  LoaderCircle
 } from 'lucide-vue-next'
 import { api, id, message } from '../api'
-import type { Book, Chapter } from '../types'
+import type { Book, Chapter, Source, SearchResult } from '../types'
 import {
   saveBook,
   getBook,
@@ -46,7 +50,108 @@ const cachingProgress = ref({
 let abortController: AbortController | null = null
 
 const path = `/books/${id(props.bookId)}`
-const filtered = computed(() => chapters.value.filter(c => c.title.includes(query.value)))
+const tocReversed = ref(false)
+const filtered = computed(() => {
+  const list = chapters.value.filter(c => c.title.includes(query.value))
+  return tocReversed.value ? [...list].reverse() : list
+})
+
+// 换源中心状态
+const sourcesMap = ref<Record<string, string>>({})
+const changeSourceOpen = ref(false)
+const changeSourceLoading = ref(false)
+const changeSourceResults = ref<SearchResult[]>([])
+const changeSourceError = ref('')
+const changeSourceSubmitting = ref(false)
+const changeSourceQuery = ref('')
+
+const currentSourceName = computed(() => {
+  if (!book.value?.sourceId) return ''
+  return sourcesMap.value[book.value.sourceId] || ''
+})
+
+async function loadSourcesMap() {
+  try {
+    const list = await api<Source[]>('/sources')
+    const map: Record<string, string> = {}
+    for (const s of list || []) {
+      map[s.id] = s.name
+    }
+    sourcesMap.value = map
+  } catch {
+    // ignore
+  }
+}
+
+async function openChangeSourceModal() {
+  if (!book.value || book.value.kind !== 'online') return
+  changeSourceOpen.value = true
+  changeSourceQuery.value = book.value.title
+  await executeSearchSources()
+}
+
+async function executeSearchSources() {
+  const kw = changeSourceQuery.value.trim()
+  if (!kw) return
+  changeSourceLoading.value = true
+  changeSourceError.value = ''
+  changeSourceResults.value = []
+  try {
+    const sources = await api<Source[]>('/sources')
+    const map: Record<string, string> = {}
+    const enabledIds: string[] = []
+    for (const s of sources || []) {
+      map[s.id] = s.name
+      if (s.enabled) enabledIds.push(s.id)
+    }
+    sourcesMap.value = map
+    if (!enabledIds.length) {
+      changeSourceError.value = '当前暂无已启用的个人书源，请先前往「书源管理」导入并启用书源。'
+      return
+    }
+    const results = await api<SearchResult[]>('/search', 'POST', {
+      keyword: kw,
+      sourceIds: enabledIds.slice(0, 50),
+      timeoutSeconds: 15
+    })
+    changeSourceResults.value = (results || []).sort((a, b) => {
+      const aExact = a.title === book.value?.title ? 1 : 0
+      const bExact = b.title === book.value?.title ? 1 : 0
+      return bExact - aExact
+    })
+  } catch (e) {
+    changeSourceError.value = message(e)
+  } finally {
+    changeSourceLoading.value = false
+  }
+}
+
+async function applyChangeSource(item: SearchResult) {
+  if (!book.value || changeSourceSubmitting.value) return
+  changeSourceSubmitting.value = true
+  changeSourceError.value = ''
+  try {
+    await api(`${path}/source`, 'PUT', {
+      sourceId: item.sourceId,
+      url: item.url
+    })
+    changeSourceOpen.value = false
+    await load()
+    notice.value = `已切换至书源「${sourcesMap.value[item.sourceId] || '新书源'}」，共 ${chapters.value.length} 章。`
+  } catch (e) {
+    changeSourceError.value = message(e)
+  } finally {
+    changeSourceSubmitting.value = false
+  }
+}
+
+async function scrollToCurrentChapter() {
+  if (!book.value?.progress?.chapterId) return
+  query.value = ''
+  await nextTick()
+  const el = document.querySelector('.chapter-grid > a.selected') as HTMLElement | null
+  el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
 
 async function refreshCachedStatus() {
   if (props.bookId) {
@@ -193,13 +298,22 @@ function cancelCaching() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadSourcesMap()
+})
 </script>
 
 <template>
   <a href="#/library" class="back-link"><ArrowLeft :size="17" />返回我的书架</a>
   <div v-if="error" class="error" role="alert">
-    {{ error }} <button class="text-button" @click="load">重新加载</button>
+    <span>{{ error }}</span>
+    <div class="actions">
+      <button v-if="book?.kind === 'online'" class="text-button" @click="openChangeSourceModal">
+        <Shuffle :size="15" /> 一键换源
+      </button>
+      <button class="text-button" @click="load">重新加载</button>
+    </div>
   </div>
   <div v-if="notice" class="success" role="status">{{ notice }}</div>
   <div v-if="loading" class="empty" role="status">正在翻开书籍信息…</div>
@@ -209,6 +323,7 @@ onMounted(load)
       <div class="book-detail-info">
         <span class="eyebrow">
           {{ book.kind === 'online' ? 'ONLINE COLLECTION' : 'PERSONAL COLLECTION' }}
+          <span v-if="currentSourceName" class="source-origin-badge">{{ currentSourceName }}</span>
           <span v-if="isOfflineReady" class="offline-badge">离线缓存就绪</span>
         </span>
         <h1>{{ book.title }}</h1>
@@ -223,6 +338,9 @@ onMounted(load)
           <button v-else disabled>暂无可读章节</button>
           <button v-if="book.kind === 'online'" :disabled="busy || cachingBusy" @click="refresh">
             <RefreshCw :size="17" />更新目录
+          </button>
+          <button v-if="book.kind === 'online'" :disabled="busy || cachingBusy" @click="openChangeSourceModal">
+            <Shuffle :size="17" />换源
           </button>
           <button v-if="chapters.length && !cachingBusy" :disabled="busy" @click="cacheSubsequent" title="从当前阅读进度向后缓存章节">
             <Download :size="17" />离线缓存后续章节
@@ -258,12 +376,34 @@ onMounted(load)
       </div>
     </section>
     <section class="toc-section">
-      <div class="section-heading">
+      <div class="section-heading toc-heading-bar">
         <h2>目录 <span class="count">{{ chapters.length }}</span></h2>
-        <label class="search-input">
-          <Search :size="16" />
-          <input v-model="query" aria-label="搜索章节" placeholder="搜索章节" />
-        </label>
+        <div class="toc-controls-row">
+          <button
+            v-if="book.progress?.chapterId && chapters.length"
+            type="button"
+            class="secondary compact-btn"
+            @click="scrollToCurrentChapter"
+            title="定位到当前阅读章节"
+          >
+            <LocateFixed :size="15" />
+            <span>定位当前章</span>
+          </button>
+          <button
+            v-if="chapters.length > 1"
+            type="button"
+            class="secondary compact-btn"
+            @click="tocReversed = !tocReversed"
+            :title="tocReversed ? '切换为正序目录' : '切换为倒序目录（最新章节在前）'"
+          >
+            <ArrowUpDown :size="15" />
+            <span>{{ tocReversed ? '倒序 · 最新在前' : '正序 · 从头看起' }}</span>
+          </button>
+          <label class="search-input">
+            <Search :size="16" />
+            <input v-model="query" aria-label="搜索章节" placeholder="搜索章节" />
+          </label>
+        </div>
       </div>
       <div class="chapter-grid">
         <a
@@ -273,13 +413,89 @@ onMounted(load)
           :class="{ selected: book.progress?.chapterId === chapter.id }"
         >
           <span>{{ String(chapter.index + 1).padStart(2, '0') }}</span>
-          {{ chapter.title }}
+          <em class="chapter-link-title">{{ chapter.title }}</em>
+          <small v-if="cachedChapterIds.has(chapter.id)" class="chapter-cached-dot" title="已离线缓存">已缓存</small>
           <BookOpen v-if="book.progress?.chapterId === chapter.id" :size="15" />
         </a>
       </div>
       <p v-if="!filtered.length" class="empty">
-        {{ chapters.length ? '没有匹配的章节。' : '暂无章节，在线书籍可尝试更新目录。' }}
+        {{ chapters.length ? '没有匹配的章节。' : '暂无章节，在线书籍可尝试更新目录或点击换源。' }}
       </p>
     </section>
+
+    <!-- 详情页换源中心弹窗 -->
+    <div v-if="changeSourceOpen" class="modal-backdrop" @click="changeSourceOpen = false">
+      <div class="modal-card change-source-dialog" @click.stop>
+        <div class="modal-header">
+          <div>
+            <h3>换源中心</h3>
+            <p class="muted" style="font-size: 13px; margin-top: 2px;">
+              当前书籍：「{{ book.title }}」· 切换书源后自动保留阅读进度
+            </p>
+          </div>
+          <button class="icon-button" @click="changeSourceOpen = false" aria-label="关闭换源">
+            <X :size="18" />
+          </button>
+        </div>
+
+        <div class="modal-search-row">
+          <input
+            v-model="changeSourceQuery"
+            placeholder="搜索书籍关键词进行换源…"
+            @keyup.enter="executeSearchSources"
+          />
+          <button class="primary" :disabled="changeSourceLoading" @click="executeSearchSources">
+            <LoaderCircle v-if="changeSourceLoading" class="spin" :size="15" />
+            <Search v-else :size="15" />
+            <span>重新搜索</span>
+          </button>
+        </div>
+
+        <div v-if="changeSourceError" class="error message-box" style="margin: 12px 20px 0;">
+          <span>{{ changeSourceError }}</span>
+          <a href="#/sources" class="text-button">前往书源管理</a>
+        </div>
+
+        <div class="change-source-body">
+          <div v-if="changeSourceLoading" class="empty" style="padding: 40px 0;">
+            <LoaderCircle class="spin" :size="28" />
+            <p class="muted" style="margin-top: 10px;">正在检索你的可用书源匹配书籍…</p>
+          </div>
+
+          <div v-else-if="!changeSourceResults.length" class="empty" style="padding: 40px 0;">
+            <p class="muted">未检索到其他可用书源结果，可修改关键词后重新搜索。</p>
+          </div>
+
+          <div v-else class="source-candidates-list">
+            <div
+              v-for="(item, idx) in changeSourceResults"
+              :key="idx"
+              :class="['source-card-item', { active: book.sourceId === item.sourceId }]"
+              @click="applyChangeSource(item)"
+            >
+              <div class="source-badge-tag">
+                {{ sourcesMap[item.sourceId] || '书源 ' + item.sourceId.substring(0, 8) }}
+              </div>
+              <div class="source-info-main">
+                <div class="source-title-row">
+                  <strong>{{ item.title }}</strong>
+                  <span v-if="item.author" class="source-author">作者：{{ item.author }}</span>
+                  <span v-if="book.sourceId === item.sourceId" class="current-badge">当前在用</span>
+                </div>
+                <p class="source-url-text muted">{{ item.url }}</p>
+                <p v-if="item.intro" class="source-intro-text">{{ item.intro }}</p>
+              </div>
+              <button
+                class="source-action-btn"
+                :disabled="changeSourceSubmitting || book.sourceId === item.sourceId"
+              >
+                <LoaderCircle v-if="changeSourceSubmitting" class="spin" :size="14" />
+                <span v-else>{{ book.sourceId === item.sourceId ? '使用中' : '切换此源' }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </template>
 </template>

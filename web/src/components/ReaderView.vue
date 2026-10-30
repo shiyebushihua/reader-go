@@ -28,7 +28,9 @@ import {
   Scroll,
   Smartphone,
   Search,
-  RefreshCw
+  RefreshCw,
+  ArrowUpDown,
+  LocateFixed
 } from 'lucide-vue-next'
 import { api, ApiError, id, message } from '../api'
 import type { Book, Chapter, ChapterContent, Progress, Bookmark, Settings, SearchResult, Source } from '../types'
@@ -66,6 +68,8 @@ const panel = ref<'toc' | 'settings' | 'bookmarks' | ''>('')
 const position = ref(0), version = ref(0), dirty = ref(false), saving = ref(false), conflict = ref(false)
 const savedLabel = ref('尚未修改'), note = ref(''), bookmarkBusy = ref(false), settingsBusy = ref(false)
 const tocQuery = ref(''), scroller = ref<HTMLElement | null>(null), isFullscreen = ref(false)
+const tocReversed = ref(false)
+const lastTargetChapterId = ref('')
 const showControls = ref(typeof window !== 'undefined' ? window.innerWidth > 768 : true)
 const isFromCache = ref(false)
 
@@ -138,7 +142,10 @@ const currentFont = computed(() => {
 
 const index = computed(() => chapters.value.findIndex(c => c.id === content.value?.id))
 const currentChapterName = computed(() => content.value?.title || (index.value >= 0 ? chapters.value[index.value]?.title : ''))
-const toc = computed(() => chapters.value.filter(c => c.title.toLowerCase().includes(tocQuery.value.toLowerCase())))
+const toc = computed(() => {
+  const list = chapters.value.filter(c => c.title.toLowerCase().includes(tocQuery.value.toLowerCase()))
+  return tocReversed.value ? [...list].reverse() : list
+})
 
 const paragraphs = computed(() => {
   if (!content.value?.content) return []
@@ -371,6 +378,7 @@ async function openChapter(chapterId: string, ratio = 0, save = true) {
   if (chapterLoading.value || restoring) return
   if (save && dirty.value && !(await saveProgress())) return
   clearTimeout(timer)
+  lastTargetChapterId.value = chapterId
   chapterLoading.value = true
   error.value = ''
   try {
@@ -409,6 +417,15 @@ async function openChapter(chapterId: string, ratio = 0, save = true) {
   }
 }
 
+async function retryFailedChapter() {
+  const targetId = lastTargetChapterId.value || content.value?.id
+  if (targetId && chapters.value.length) {
+    await openChapter(targetId, targetId === content.value?.id ? position.value : 0, false)
+  } else {
+    await load()
+  }
+}
+
 function getScrollPageStep(el: HTMLElement) {
   const linePx = Math.max(24, Math.round(prefs.fontSize * prefs.lineHeight))
   return Math.max(120, el.clientHeight - linePx)
@@ -435,6 +452,9 @@ function onScroll() {
   } else {
     const max = el.scrollHeight - el.clientHeight
     position.value = max > 0 ? Math.min(1, Math.max(0, el.scrollTop / max)) : 1
+    if (showControls.value && !panel.value && !changeSourceOpen.value && el.scrollTop > 60) {
+      showControls.value = false
+    }
   }
   dirty.value = true
   savedLabel.value = '待保存'
@@ -582,14 +602,19 @@ async function executeSearchSources() {
     }
     const sourceIds = enabledSourceIds.value.slice(0, 50)
     if (!sourceIds.length) {
-      changeSourceError.value = '当前暂无已启用的书源，请先在管理控制台导入并启用书源。'
+      changeSourceError.value = '当前暂无已启用的个人书源，请先前往「书源管理」导入并启用书源。'
       return
     }
     const results = await api<SearchResult[]>('/search', 'POST', {
       keyword: changeSourceQuery.value.trim(),
-      sourceIds
+      sourceIds,
+      timeoutSeconds: 15
     })
-    changeSourceResults.value = results || []
+    changeSourceResults.value = (results || []).sort((a, b) => {
+      const aExact = a.title === book.value?.title ? 1 : 0
+      const bExact = b.title === book.value?.title ? 1 : 0
+      return bExact - aExact
+    })
   } catch (e) {
     changeSourceError.value = message(e)
   } finally {
@@ -783,9 +808,21 @@ async function saveSettings() {
   }
 }
 
+async function scrollToActiveTocItem() {
+  tocQuery.value = ''
+  await nextTick()
+  const activeBtn = document.querySelector('.reader-toc button.selected') as HTMLElement | null
+  activeBtn?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
 function toggle(value: 'toc' | 'settings' | 'bookmarks') {
   panel.value = panel.value === value ? '' : value
-  if (panel.value) showControls.value = true
+  if (panel.value) {
+    showControls.value = true
+    if (panel.value === 'toc') {
+      void scrollToActiveTocItem()
+    }
+  }
 }
 
 function toggleFullscreen() {
@@ -797,14 +834,25 @@ function toggleFullscreen() {
 }
 
 function keydown(e: KeyboardEvent) {
+  const target = e.target as HTMLElement | null
+  const inInput = !!target?.closest('input, textarea, select')
   if (e.key === 'Escape') {
     if (panel.value) panel.value = ''
     else if (changeSourceOpen.value) changeSourceOpen.value = false
     else showControls.value = !showControls.value
-  } else if (e.key === 'ArrowLeft' && !panel.value && !changeSourceOpen.value) {
+    return
+  }
+  if (inInput || panel.value || changeSourceOpen.value) return
+  if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+    e.preventDefault()
     prevPage()
-  } else if (e.key === 'ArrowRight' && !panel.value && !changeSourceOpen.value) {
+  } else if (e.key === 'ArrowRight' || e.key === 'PageDown') {
+    e.preventDefault()
     nextPage()
+  } else if (e.key === ' ') {
+    e.preventDefault()
+    if (e.shiftKey) prevPage()
+    else nextPage()
   }
 }
 
@@ -971,12 +1019,20 @@ defineExpose({canLeave})
 
     <!-- Notification Banners -->
     <div v-if="error" class="error reader-message" role="alert" style="margin: 70px 24px 0; z-index: 45;">
-      {{ error }}
+      <span>{{ error }}</span>
       <div v-if="conflict" class="actions">
         <button @click="resolveConflict(false)" :disabled="saving">使用云端位置</button>
         <button @click="resolveConflict(true)" :disabled="saving">保留当前位置并覆盖</button>
       </div>
-      <button v-else-if="!content" @click="load">重试加载</button>
+      <div v-else class="actions">
+        <button v-if="book?.kind === 'online'" class="text-button" @click="openChangeSourceModal">
+          <Shuffle :size="15" /> 一键换源
+        </button>
+        <button class="text-button" @click="retryFailedChapter">
+          <RefreshCw :size="14" /> 重试加载
+        </button>
+        <button class="icon-button" @click="error = ''" aria-label="关闭错误提示"><X :size="15" /></button>
+      </div>
     </div>
     <div v-if="notice" class="success reader-message" role="status" style="margin: 70px 24px 0; z-index: 45;">
       {{ notice }}
@@ -1003,7 +1059,29 @@ defineExpose({canLeave})
         <div class="drawer-body">
           <!-- 1. TOC Panel -->
           <template v-if="panel === 'toc'">
-            <input v-model="tocQuery" placeholder="搜索章节名称…" aria-label="搜索章节" style="margin-bottom: 12px;" />
+            <div class="reader-toc-toolbar">
+              <input v-model="tocQuery" placeholder="搜索章节名称…" aria-label="搜索章节" />
+              <div class="reader-toc-actions">
+                <button
+                  type="button"
+                  class="secondary compact-btn"
+                  @click="scrollToActiveTocItem"
+                  title="定位当前阅读章节"
+                >
+                  <LocateFixed :size="14" />
+                  <span>当前章</span>
+                </button>
+                <button
+                  type="button"
+                  class="secondary compact-btn"
+                  @click="tocReversed = !tocReversed"
+                  :title="tocReversed ? '切换为正序' : '切换为倒序'"
+                >
+                  <ArrowUpDown :size="14" />
+                  <span>{{ tocReversed ? '倒序' : '正序' }}</span>
+                </button>
+              </div>
+            </div>
             <div class="reader-toc">
               <button
                 v-for="chapter in toc"
@@ -1287,7 +1365,8 @@ defineExpose({canLeave})
           </div>
 
           <div v-if="changeSourceError" class="error message-box" style="margin-bottom: 12px;">
-            {{ changeSourceError }}
+            <span>{{ changeSourceError }}</span>
+            <a href="#/sources" class="text-button">前往书源管理</a>
           </div>
 
           <!-- Source Candidates List -->
@@ -1374,7 +1453,17 @@ defineExpose({canLeave})
             </p>
           </div>
 
-          <p v-if="!content.content" class="muted text-center" style="padding: 40px 0;">此章节暂无正文内容。</p>
+          <div v-if="!content.content" class="empty-chapter-fallback">
+            <p class="muted">此章节未能解析到正文内容，可能原书源规则变更或站点限流。</p>
+            <div class="actions" style="justify-content: center; margin-top: 12px;">
+              <button type="button" class="secondary" @click="openChapter(content.id, 0, false)">
+                <RefreshCw :size="15" /> 重新获取本章
+              </button>
+              <button v-if="book?.kind === 'online'" type="button" class="primary" @click="openChangeSourceModal">
+                <Shuffle :size="15" /> 一键换源
+              </button>
+            </div>
+          </div>
 
           <div class="chapter-end">
             <span></span>
@@ -1423,6 +1512,24 @@ defineExpose({canLeave})
           <h2>暂无可读章节</h2>
           <a :href="`#/book/${id(bookId)}`" class="button secondary" style="margin-top: 16px;">返回书籍</a>
         </div>
+      </div>
+
+      <!-- Immersive Micro Status Bar (Bottom Edge Indicator when HUD is hidden) -->
+      <div
+        v-if="content && !showControls && !panel && !changeSourceOpen"
+        class="reader-micro-status"
+        aria-hidden="true"
+      >
+        <span class="micro-chapter-title">{{ content.title }}</span>
+        <span class="micro-progress-info">
+          第 {{ index + 1 }}/{{ chapters.length }} 章
+          <template v-if="prefs.pageMode === 'slide'">
+            · {{ slidePage + 1 }}/{{ totalSlidePages }} 页
+          </template>
+          <template v-else>
+            · {{ Math.round(position * 100) }}%
+          </template>
+        </span>
       </div>
     </div>
 

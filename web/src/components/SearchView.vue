@@ -19,7 +19,8 @@ import {
   SlidersHorizontal,
   X,
   CheckSquare,
-  Clock
+  Clock,
+  BookOpen
 } from 'lucide-vue-next'
 import { api, id, message, streamSearch, type StreamSearchProgress, type StreamSearchStart } from '../api'
 import type { Source, SearchResult, Book } from '../types'
@@ -42,6 +43,7 @@ const searched = ref(false)
 const stopped = ref(false)
 const error = ref('')
 const adding = ref('')
+const readingKey = ref('')
 const added = ref<Record<string, string>>({})
 const searchedKeyword = ref('')
 const sourceFilter = ref<'hasBooks' | 'searching' | 'all'>('hasBooks')
@@ -195,7 +197,18 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    sources.value = await api<Source[]>('/sources') || []
+    const [srcList, bookList] = await Promise.all([
+      api<Source[]>('/sources'),
+      api<Book[]>('/books').catch(() => [] as Book[])
+    ])
+    sources.value = srcList || []
+    const shelfMap: Record<string, string> = {}
+    for (const b of bookList || []) {
+      if (b.sourceId && b.url) {
+        shelfMap[`${b.sourceId}:${b.url}`] = b.id
+      }
+    }
+    added.value = shelfMap
     applyPreset('all')
   } catch (e) {
     error.value = message(e)
@@ -437,6 +450,25 @@ async function add(result: SearchResult) {
     error.value = message(e)
   } finally {
     adding.value = ''
+  }
+}
+
+async function readNow(result: SearchResult) {
+  const k = key(result)
+  if (added.value[k]) {
+    location.hash = `/read/${id(added.value[k])}`
+    return
+  }
+  readingKey.value = k
+  error.value = ''
+  try {
+    const book = await api<Book>('/books/online', 'POST', result)
+    added.value[k] = book.id
+    location.hash = `/read/${id(book.id)}`
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    readingKey.value = ''
   }
 }
 
@@ -802,24 +834,44 @@ onUnmounted(() => {
           <p class="muted result-author">{{ result.author || '佚名' }}</p>
           <p class="result-intro">{{ result.intro || '书源暂未提供简介。' }}</p>
           <div class="result-card-action">
-            <a
-              v-if="added[key(result)]"
-              class="button secondary"
-              :href="`#/book/${id(added[key(result)])}`"
-            >
-              <Check :size="16" />
-              已在书架 · 立即阅读
-            </a>
-            <button
-              v-else
-              class="primary"
-              :disabled="adding === key(result)"
-              @click="add(result)"
-            >
-              <LoaderCircle v-if="adding === key(result)" class="spin" :size="16" />
-              <Plus v-else :size="16" />
-              加入书架
-            </button>
+            <template v-if="added[key(result)]">
+              <a
+                class="button primary"
+                :href="`#/read/${id(added[key(result)])}`"
+              >
+                <BookOpen :size="16" />
+                立即阅读
+              </a>
+              <a
+                class="button secondary"
+                :href="`#/book/${id(added[key(result)])}`"
+              >
+                <Check :size="15" />
+                已在书架 · 目录
+              </a>
+            </template>
+            <template v-else>
+              <button
+                type="button"
+                class="primary"
+                :disabled="adding === key(result) || readingKey === key(result)"
+                @click="readNow(result)"
+              >
+                <LoaderCircle v-if="readingKey === key(result)" class="spin" :size="16" />
+                <BookOpen v-else :size="16" />
+                立即阅读
+              </button>
+              <button
+                type="button"
+                class="secondary"
+                :disabled="adding === key(result) || readingKey === key(result)"
+                @click="add(result)"
+              >
+                <LoaderCircle v-if="adding === key(result)" class="spin" :size="16" />
+                <Plus v-else :size="16" />
+                加入书架
+              </button>
+            </template>
           </div>
         </div>
       </article>

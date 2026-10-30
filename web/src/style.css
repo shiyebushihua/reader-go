@@ -4883,3 +4883,345 @@ tr:last-child td {
     gap: 14px;
   }
 }
+
+/* ==========================================================================
+   Global Reading & UX Ergonomics Polish (Human-Centric Review)
+   ========================================================================== */
+
+/* Search Card Dual-Action Row ("立即阅读" + "加入书架") */
+.result-card-action {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.result-card-action .button,
+.result-card-action button {
+  min-height: 40px;
+  padding: 8px 16px;
+  font-size: 13.5px;
+  border-radius: var(--radius-full);
+}
+
+/* Bookshelf Card Quick Read & Detail Action Footer */
+.book-card-quick-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.book-quick-read-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--accent-light);
+  color: var(--accent);
+  border: 1px solid rgba(154, 72, 43, 0.2);
+  box-shadow: none;
+}
+
+.book-quick-read-btn:hover {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.book-quick-detail-hint {
+  font-size: 11px;
+  color: var(--muted-light);
+  transition: color var(--transition-fast);
+}
+
+.book-card:hover .book-quick-detail-hint {
+  color: var(--accent);
+}
+
+/* Book Detail View: Source Origin Badge, TOC Toolbar & Cached Chapter Indicator */
+.source-origin-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  background: var(--accent-light);
+  color: var(--accent);
+  border: 1px solid rgba(154, 72, 43, 0.25);
+  margin-left: 8px;
+  vertical-align: middle;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.toc-heading-bar {
+  align-items: center;
+  gap: 12px;
+}
+
+.toc-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.chapter-link-title {
+  font-style: normal;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chapter-cached-dot {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  background: var(--success-bg);
+  color: var(--success);
+  flex-shrink: 0;
+}
+
+/* Reader Settings Drawer: Mode Selector Grid & Toggle Option Card */
+.mode-selector-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.mode-tab-btn {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1.5px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  box-shadow: var(--shadow-subtle);
+  cursor: pointer;
+}
+
+.mode-tab-btn svg {
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.mode-tab-btn .mode-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mode-tab-btn .mode-text strong {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.mode-tab-btn .mode-text small {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.mode-tab-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-light);
+  color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-light);
+}
+
+.mode-tab-btn.active svg,
+.mode-tab-btn.active .mode-text small {
+  color: var(--accent);
+}
+
+.toggle-option-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  margin-bottom: 18px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.toggle-option-card:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+
+.toggle-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.toggle-info strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.toggle-info small {
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+/* Reader TOC Drawer Toolbar */
+.reader-toc-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: sticky;
+  top: -12px;
+  z-index: 2;
+  padding-bottom: 10px;
+  margin-bottom: 6px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.reader.is-night .reader-toc-toolbar {
+  background: #181a20;
+}
+
+.reader-toc-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reader-toc-actions button {
+  flex: 1;
+  min-height: 34px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.reader-toc button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.reader-toc button small {
+  min-width: 28px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.reader-toc button span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Empty Chapter Content Actionable Fallback */
+.empty-chapter-fallback {
+  margin: 36px 0;
+  padding: 28px 20px;
+  border-radius: var(--radius-lg);
+  border: 1px dashed var(--line-strong);
+  background: rgba(var(--surface-rgb), 0.65);
+  text-align: center;
+}
+
+.slide-page-badge {
+  display: inline-block;
+  margin-left: 6px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* Subtle Bottom Micro Status Bar (Immersive Reading Progress Indicator) */
+.reader-micro-status {
+  position: absolute;
+  bottom: max(6px, env(safe-area-inset-bottom, 6px));
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(92%, 780px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--muted-light);
+  opacity: 0.72;
+  pointer-events: none;
+  z-index: 15;
+  user-select: none;
+}
+
+.micro-chapter-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+
+.micro-progress-info {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 768px) {
+  .toc-controls-row {
+    width: 100%;
+  }
+
+  .toc-controls-row .search-input {
+    width: 100%;
+    order: -1;
+  }
+
+  .toc-controls-row .search-input input {
+    max-width: none;
+    width: 100%;
+    font-size: 16px;
+  }
+
+  .result-card-action {
+    gap: 8px;
+  }
+
+  .result-card-action .button,
+  .result-card-action button {
+    flex: 1 1 auto;
+    min-height: 38px;
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+}

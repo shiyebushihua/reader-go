@@ -114,6 +114,10 @@ async function upload() {
   }
 }
 
+function openReaderDirect(bookId: string) {
+  location.hash = `/read/${id(bookId)}`
+}
+
 async function removeBook(book: Book) {
   if (removingId.value) return
   if (!confirm(`确定从书架移除《${book.title}》吗？阅读进度、书签和本地文件也会被删除，此操作无法撤销。`)) return
@@ -212,7 +216,10 @@ onMounted(() => {
         <strong>《{{ imported.title }}》已加入书架</strong>
         <p>共 {{ imported.chapterCount }} 章，新的故事等你翻开。</p>
       </div>
-      <a class="button primary" :href="`#/book/${id(imported.id)}`">查看书籍<ArrowUpRight :size="18" /></a>
+      <div class="actions">
+        <a class="button primary" :href="`#/read/${id(imported.id)}`"><BookOpen :size="18" />立即阅读</a>
+        <a class="button secondary" :href="`#/book/${id(imported.id)}`">查看目录<ArrowUpRight :size="17" /></a>
+      </div>
     </div>
   </template>
 
@@ -308,6 +315,17 @@ onMounted(() => {
             </div>
             <div class="progress-track" v-if="book.progress">
               <span :style="{ width: `${book.progress.position * 100}%` }"></span>
+            </div>
+            <div class="book-card-quick-actions">
+              <button
+                type="button"
+                class="book-quick-read-btn"
+                @click.stop.prevent="openReaderDirect(book.id)"
+              >
+                <BookOpen :size="13" />
+                <span>{{ book.progress ? '继续阅读' : '立即阅读' }}</span>
+              </button>
+              <span class="book-quick-detail-hint">目录 · 详情</span>
             </div>
           </div>
         </a>

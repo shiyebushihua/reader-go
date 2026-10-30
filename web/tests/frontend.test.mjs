@@ -217,3 +217,23 @@ test('search view uses result-centric relevance ranking, collapsible scope card,
   assert.match(css, /\.import-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
   assert.match(css, /\.file-picker input\[type="file"\]/)
 })
+
+test('reader, book detail, search, and shelf support human-centric reading flow, TOC sorting, and source recovery', async () => {
+  const readerView = await readFile(new URL('../src/components/ReaderView.vue', import.meta.url), 'utf8')
+  const bookView = await readFile(new URL('../src/components/BookView.vue', import.meta.url), 'utf8')
+  const searchView = await readFile(new URL('../src/components/SearchView.vue', import.meta.url), 'utf8')
+  const libraryView = await readFile(new URL('../src/components/LibraryView.vue', import.meta.url), 'utf8')
+  const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
+
+  assert.match(readerView, /scrollToActiveTocItem/)
+  assert.match(readerView, /tocReversed/)
+  assert.match(readerView, /retryFailedChapter/)
+  assert.match(readerView, /reader-micro-status/)
+  assert.match(bookView, /openChangeSourceModal/)
+  assert.match(bookView, /scrollToCurrentChapter/)
+  assert.match(bookView, /tocReversed/)
+  assert.match(searchView, /readNow/)
+  assert.match(libraryView, /openReaderDirect/)
+  assert.match(css, /\.mode-selector-grid/)
+  assert.match(css, /\.toggle-option-card/)
+})
