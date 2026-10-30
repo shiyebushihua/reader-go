@@ -32,7 +32,7 @@ import (
 //go:embed schema.sql
 var schema string
 
-const Version = "0.0.7"
+const Version = "0.0.8"
 const DefaultVersion = Version
 
 type Config struct {

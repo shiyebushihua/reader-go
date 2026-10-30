@@ -462,17 +462,119 @@ func (s *Server) checkSource(w http.ResponseWriter, r *http.Request) error {
 	respond(w, results)
 	return nil
 }
+func normalizeMatchText(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	replacer := strings.NewReplacer(
+		"《", "", "》", "", "「", "", "」", "", "『", "", "』", "",
+		"（", "", "）", "", "(", "", ")", "", "【", "", "】", "",
+		"[", "", "]", "", "：", "", ":", "", "·", "", " ", "", "\t", "",
+	)
+	return replacer.Replace(s)
+}
+
+func scoreSearchResult(res engine.Result, keyword string) int {
+	kw := normalizeMatchText(keyword)
+	if kw == "" {
+		return 0
+	}
+	title := normalizeMatchText(res.Title)
+	author := normalizeMatchText(res.Author)
+	if title == "" {
+		return 0
+	}
+	if title == kw {
+		return 100
+	}
+	if strings.HasPrefix(title, kw) {
+		return 85
+	}
+	if strings.Contains(title, kw) {
+		return 75
+	}
+	if author != "" && author == kw {
+		return 65
+	}
+	if author != "" && strings.Contains(author, kw) {
+		return 55
+	}
+	if len([]rune(title)) >= 2 && strings.Contains(kw, title) {
+		return 40
+	}
+	return 0
+}
+
+func filterAndRankResults(items []engine.Result, keyword string) []engine.Result {
+	type scored struct {
+		item  engine.Result
+		score int
+		tLen  int
+	}
+	matched := make([]scored, 0, len(items))
+	for _, it := range items {
+		sc := scoreSearchResult(it, keyword)
+		if sc > 0 {
+			matched = append(matched, scored{item: it, score: sc, tLen: len([]rune(strings.TrimSpace(it.Title)))})
+		}
+	}
+	sort.SliceStable(matched, func(i, j int) bool {
+		if matched[i].score != matched[j].score {
+			return matched[i].score > matched[j].score
+		}
+		return matched[i].tLen < matched[j].tLen
+	})
+	out := make([]engine.Result, 0, len(matched))
+	for _, m := range matched {
+		out = append(out, m.item)
+	}
+	return out
+}
+
+func (s *Server) resolveSearchSources(ctx context.Context, uid string, sourceIDs []string, maxLimit int) ([]Source, error) {
+	if len(sourceIDs) == 0 {
+		rows, err := s.db.QueryContext(ctx, "SELECT id,name,url,group_name,enabled,rule,updated_at FROM sources WHERE user_id=? AND enabled=TRUE ORDER BY name LIMIT ?", uid, maxLimit)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		list := []Source{}
+		for rows.Next() {
+			var v Source
+			if err := rows.Scan(&v.ID, &v.Name, &v.URL, &v.Group, &v.Enabled, &v.Rule, &v.UpdatedAt); err == nil {
+				list = append(list, v)
+			}
+		}
+		return list, nil
+	}
+	sources := []Source{}
+	seen := map[string]bool{}
+	for _, sid := range sourceIDs {
+		if seen[sid] {
+			continue
+		}
+		seen[sid] = true
+		v, e := s.source(ctx, uid, sid, true)
+		if e == nil {
+			sources = append(sources, v)
+			if len(sources) >= maxLimit {
+				break
+			}
+		}
+	}
+	return sources, nil
+}
+
 func (s *Server) searchBooks(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
-		Keyword   string
-		SourceIDs []string `json:"sourceIds"`
+		Keyword        string
+		SourceIDs      []string `json:"sourceIds"`
+		TimeoutSeconds int      `json:"timeoutSeconds"`
 	}
 	if e := decode(w, r, &body); e != nil {
 		return e
 	}
 	body.Keyword = strings.TrimSpace(body.Keyword)
-	if len(body.Keyword) == 0 || len(body.Keyword) > 200 || len(body.SourceIDs) == 0 || len(body.SourceIDs) > 50 {
-		return fail(400, "SEARCH", "请输入关键词并选择 1–50 个书源")
+	if len(body.Keyword) == 0 || len(body.Keyword) > 200 || len(body.SourceIDs) > 200 {
+		return fail(400, "SEARCH", "请输入有效搜索关键词")
 	}
 	select {
 	case s.search <- struct{}{}:
@@ -480,27 +582,22 @@ func (s *Server) searchBooks(w http.ResponseWriter, r *http.Request) error {
 	default:
 		return fail(429, "BUSY", "搜索队列繁忙，请稍后再试")
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	perSourceTimeout := 15 * time.Second
+	if body.TimeoutSeconds >= 5 && body.TimeoutSeconds <= 60 {
+		perSourceTimeout = time.Duration(body.TimeoutSeconds) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 	uid := current(r).ID
-	sources := []Source{}
-	seen := map[string]bool{}
-	for _, sid := range body.SourceIDs {
-		if seen[sid] {
-			continue
-		}
-		seen[sid] = true
-		v, e := s.source(ctx, uid, sid, true)
-		if e != nil {
-			return e
-		}
-		sources = append(sources, v)
+	sources, err := s.resolveSearchSources(ctx, uid, body.SourceIDs, 100)
+	if err != nil {
+		return err
 	}
 	results := []engine.Result{}
 	warnings := []map[string]string{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 4)
+	sem := make(chan struct{}, 8)
 	for _, src := range sources {
 		wg.Add(1)
 		go func(v Source) {
@@ -514,20 +611,24 @@ func (s *Server) searchBooks(w http.ResponseWriter, r *http.Request) error {
 				mu.Unlock()
 				return
 			}
-			items, e := s.engine.Search(ctx, engine.Source{ID: v.ID, Rule: v.Rule}, body.Keyword)
+			srcCtx, srcCancel := context.WithTimeout(ctx, perSourceTimeout)
+			items, e := s.engine.Search(srcCtx, engine.Source{ID: v.ID, Rule: v.Rule}, body.Keyword)
+			srcCancel()
 			mu.Lock()
 			defer mu.Unlock()
 			if e != nil {
-				warnings = append(warnings, map[string]string{"sourceId": v.ID, "message": "书源请求或解析失败，可能存在不支持的规则"})
+				warnings = append(warnings, map[string]string{"sourceId": v.ID, "message": "书源请求或解析失败"})
 				return
 			}
-			if len(items) > 200 {
-				items = items[:200]
+			items = filterAndRankResults(items, body.Keyword)
+			if len(items) > 100 {
+				items = items[:100]
 			}
 			results = append(results, items...)
 		}(src)
 	}
 	wg.Wait()
+	results = filterAndRankResults(results, body.Keyword)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	return json.NewEncoder(w).Encode(map[string]any{"data": results, "meta": map[string]any{"warnings": warnings}})
 }
@@ -537,15 +638,16 @@ func (s *Server) searchBooksStream(w http.ResponseWriter, r *http.Request) error
 		return s.searchBooks(w, r)
 	}
 	var body struct {
-		Keyword   string
-		SourceIDs []string `json:"sourceIds"`
+		Keyword        string
+		SourceIDs      []string `json:"sourceIds"`
+		TimeoutSeconds int      `json:"timeoutSeconds"`
 	}
 	if e := decode(w, r, &body); e != nil {
 		return e
 	}
 	body.Keyword = strings.TrimSpace(body.Keyword)
-	if len(body.Keyword) == 0 || len(body.Keyword) > 200 || len(body.SourceIDs) == 0 || len(body.SourceIDs) > 100 {
-		return fail(400, "SEARCH", "请输入关键词并选择 1–100 个书源")
+	if len(body.Keyword) == 0 || len(body.Keyword) > 200 || len(body.SourceIDs) > 200 {
+		return fail(400, "SEARCH", "请输入有效搜索关键词")
 	}
 	select {
 	case s.search <- struct{}{}:
@@ -558,21 +660,18 @@ func (s *Server) searchBooksStream(w http.ResponseWriter, r *http.Request) error
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	perSourceTimeout := 15 * time.Second
+	if body.TimeoutSeconds >= 5 && body.TimeoutSeconds <= 60 {
+		perSourceTimeout = time.Duration(body.TimeoutSeconds) * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
 	uid := current(r).ID
-	sources := []Source{}
-	seen := map[string]bool{}
-	for _, sid := range body.SourceIDs {
-		if seen[sid] {
-			continue
-		}
-		seen[sid] = true
-		v, e := s.source(ctx, uid, sid, true)
-		if e == nil {
-			sources = append(sources, v)
-		}
+	sources, err := s.resolveSearchSources(ctx, uid, body.SourceIDs, 100)
+	if err != nil {
+		return err
 	}
 	total := len(sources)
 	sourceNames := make([]string, 0, total)
@@ -586,16 +685,6 @@ func (s *Server) searchBooksStream(w http.ResponseWriter, r *http.Request) error
 	var totalFound int
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 16)
-
-	// 排序优化：优先并发检索知名活跃源（如溜达小说等），让首批结果以最快速度流式呈现给用户
-	sort.SliceStable(sources, func(i, j int) bool {
-		iPri := strings.Contains(sources[i].Name, "溜达")
-		jPri := strings.Contains(sources[j].Name, "溜达")
-		if iPri != jPri {
-			return iPri
-		}
-		return false
-	})
 
 	for _, src := range sources {
 		wg.Add(1)
@@ -631,7 +720,7 @@ func (s *Server) searchBooksStream(w http.ResponseWriter, r *http.Request) error
 			})
 			mu.Unlock()
 
-			srcCtx, srcCancel := context.WithTimeout(ctx, 5*time.Second)
+			srcCtx, srcCancel := context.WithTimeout(ctx, perSourceTimeout)
 			items, err := s.engine.Search(srcCtx, engine.Source{ID: v.ID, Rule: v.Rule}, body.Keyword)
 			srcCancel()
 
@@ -640,10 +729,10 @@ func (s *Server) searchBooksStream(w http.ResponseWriter, r *http.Request) error
 			completedCount++
 
 			if err != nil {
-				errMsg := "书源响应异常或规则暂未完全匹配"
+				errMsg := "书源未响应或规则不匹配"
 				status := "error"
 				if errors.Is(err, context.DeadlineExceeded) || (srcCtx.Err() == context.DeadlineExceeded) {
-					errMsg = "书源响应超时(>5s)"
+					errMsg = fmt.Sprintf("响应超时(>%ds)", int(perSourceTimeout.Seconds()))
 					status = "timeout"
 				}
 				sendSSE(w, flusher, "progress", map[string]any{
@@ -658,6 +747,7 @@ func (s *Server) searchBooksStream(w http.ResponseWriter, r *http.Request) error
 				})
 				return
 			}
+			items = filterAndRankResults(items, body.Keyword)
 			if len(items) > 100 {
 				items = items[:100]
 			}
@@ -787,6 +877,119 @@ func (s *Server) deduplicateSources(w http.ResponseWriter, r *http.Request) erro
 		"retained":  totalRemaining,
 		"total":     cleanedCount + totalRemaining,
 		"mode":      body.Mode,
+	})
+	return nil
+}
+func (s *Server) probeSources(w http.ResponseWriter, r *http.Request) error {
+	uid := current(r).ID
+	var body struct {
+		AutoDelete *bool    `json:"autoDelete"`
+		IDs        []string `json:"ids"`
+	}
+	_ = decode(w, r, &body)
+	autoDelete := true
+	if body.AutoDelete != nil {
+		autoDelete = *body.AutoDelete
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+
+	var rows *sql.Rows
+	var err error
+	if len(body.IDs) > 0 && len(body.IDs) <= 500 {
+		args := make([]any, 0, len(body.IDs)+1)
+		args = append(args, uid)
+		placeholders := make([]string, 0, len(body.IDs))
+		for _, sid := range body.IDs {
+			args = append(args, sid)
+			placeholders = append(placeholders, "?")
+		}
+		rows, err = s.db.QueryContext(ctx, "SELECT id,name,url,group_name,enabled,rule,updated_at FROM sources WHERE user_id=? AND id IN ("+strings.Join(placeholders, ",")+") ORDER BY name", args...)
+	} else {
+		rows, err = s.db.QueryContext(ctx, "SELECT id,name,url,group_name,enabled,rule,updated_at FROM sources WHERE user_id=? ORDER BY name LIMIT 1000", uid)
+	}
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	list := []Source{}
+	for rows.Next() {
+		var v Source
+		if err := rows.Scan(&v.ID, &v.Name, &v.URL, &v.Group, &v.Enabled, &v.Rule, &v.UpdatedAt); err == nil {
+			list = append(list, v)
+		}
+	}
+
+	type deadItem struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		URL    string `json:"url"`
+		Reason string `json:"reason"`
+	}
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 16)
+	deadList := []deadItem{}
+	aliveIDs := []string{}
+
+	for _, src := range list {
+		wg.Add(1)
+		go func(v Source) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			ok, reason := s.engine.Probe(ctx, engine.Source{ID: v.ID, Rule: v.Rule})
+			mu.Lock()
+			defer mu.Unlock()
+			if ok {
+				aliveIDs = append(aliveIDs, v.ID)
+			} else {
+				deadList = append(deadList, deadItem{
+					ID:     v.ID,
+					Name:   v.Name,
+					URL:    v.URL,
+					Reason: reason,
+				})
+			}
+		}(src)
+	}
+	wg.Wait()
+
+	removedCount := 0
+	if autoDelete && len(deadList) > 0 {
+		args := make([]any, 0, len(deadList)+1)
+		args = append(args, uid)
+		placeholders := make([]string, 0, len(deadList))
+		for _, d := range deadList {
+			args = append(args, d.ID)
+			placeholders = append(placeholders, "?")
+		}
+		res, err := s.db.ExecContext(r.Context(), "DELETE FROM sources WHERE user_id=? AND id IN ("+strings.Join(placeholders, ",")+")", args...)
+		if err == nil {
+			aff, _ := res.RowsAffected()
+			removedCount = int(aff)
+		}
+	}
+
+	var totalRemaining int
+	_ = s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM sources WHERE user_id=?", uid).Scan(&totalRemaining)
+
+	s.audit(r, "sources.probe", fmt.Sprintf("probed=%d, alive=%d, dead=%d, removed=%d", len(list), len(aliveIDs), len(deadList), removedCount))
+	respond(w, map[string]any{
+		"probed":      len(list),
+		"alive":       len(aliveIDs),
+		"aliveIds":    aliveIDs,
+		"dead":        len(deadList),
+		"removed":     removedCount,
+		"retained":    totalRemaining,
+		"deadSources": deadList,
 	})
 	return nil
 }

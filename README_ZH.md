@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-Go + Vue 3 + TypeScript + MySQL 的自托管阅读服务，当前版本 **v0.0.7**。Docker 从源码构建前端并嵌入单个 Go 二进制程序，运行时不需要 Node.js 或 JVM。
+Go + Vue 3 + TypeScript + MySQL 的自托管阅读服务，当前版本 **v0.0.8**。Docker 从源码构建前端并嵌入单个 Go 二进制程序，运行时不需要 Node.js 或 JVM。
 
 ## 功能
 

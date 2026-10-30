@@ -2,7 +2,7 @@
 
 English | [简体中文](README_ZH.md)
 
-A self-hosted reading service built with Go + Vue 3 + TypeScript + MySQL, currently at **v0.0.7**. Docker builds the frontend from source and embeds it into a single Go binary—no Node.js or JVM is required at runtime.
+A self-hosted reading service built with Go + Vue 3 + TypeScript + MySQL, currently at **v0.0.8**. Docker builds the frontend from source and embeds it into a single Go binary—no Node.js or JVM is required at runtime.
 
 ## Features
 

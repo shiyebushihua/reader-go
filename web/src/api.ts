@@ -39,7 +39,7 @@ export interface StreamSearchHandlers {
   onDone?: (data: StreamSearchDone) => void
 }
 export async function streamSearch(
-  params: { keyword: string; sourceIds: string[] },
+  params: { keyword: string; sourceIds?: string[]; timeoutSeconds?: number },
   handlers: StreamSearchHandlers,
   signal?: AbortSignal
 ): Promise<void> {

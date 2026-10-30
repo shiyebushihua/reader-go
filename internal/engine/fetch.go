@@ -28,9 +28,9 @@ var fetchSlots = make(chan struct{}, 64)
 type Engine struct{ client *http.Client }
 
 func New() *Engine {
-	tr := &http.Transport{Proxy: nil, DisableCompression: true, MaxIdleConns: 128, MaxIdleConnsPerHost: 16, IdleConnTimeout: 30 * time.Second, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 8 * time.Second, MaxResponseHeaderBytes: 64 << 10}
+	tr := &http.Transport{Proxy: nil, DisableCompression: true, MaxIdleConns: 128, MaxIdleConnsPerHost: 16, IdleConnTimeout: 30 * time.Second, TLSHandshakeTimeout: 8 * time.Second, ResponseHeaderTimeout: 18 * time.Second, MaxResponseHeaderBytes: 64 << 10}
 	tr.DialContext = publicDial
-	return &Engine{client: &http.Client{Transport: tr, Timeout: 12 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	return &Engine{client: &http.Client{Transport: tr, Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return fmt.Errorf("redirect limit exceeded")
 		}
@@ -82,7 +82,7 @@ func validURL(u *url.URL) error {
 }
 func publicDial(ctx context.Context, network, address string) (net.Conn, error) {
 	return dialPublic(ctx, network, address, net.DefaultResolver.LookupNetIP,
-		(&net.Dialer{Timeout: 4 * time.Second, KeepAlive: 30 * time.Second}).DialContext)
+		(&net.Dialer{Timeout: 6 * time.Second, KeepAlive: 30 * time.Second}).DialContext)
 }
 
 func dialPublic(ctx context.Context, network, address string,
@@ -129,8 +129,11 @@ type fetched struct {
 }
 
 func (e *Engine) fetch(ctx context.Context, spec requestSpec) (fetched, error) {
-	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
-	defer cancel()
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 25*time.Second)
+		defer cancel()
+	}
 	select {
 	case fetchSlots <- struct{}{}:
 		defer func() { <-fetchSlots }()
@@ -259,4 +262,116 @@ func (e *Engine) FetchSource(ctx context.Context, rawURL string) (json.RawMessag
 		return nil, fmt.Errorf("source response must be a JSON object or array")
 	}
 	return json.RawMessage(data), nil
+}
+
+func (e *Engine) probeOnce(ctx context.Context, spec requestSpec) (int, error) {
+	select {
+	case fetchSlots <- struct{}{}:
+		defer func() { <-fetchSlots }()
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+	u, err := url.Parse(spec.URL)
+	if err != nil {
+		return 0, err
+	}
+	if err = validURL(u); err != nil {
+		return 0, err
+	}
+	method := strings.ToUpper(spec.Method)
+	if method == "" {
+		method = "GET"
+	}
+	if method != "GET" && method != "POST" {
+		method = "GET"
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), strings.NewReader(spec.Body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/json,*/*;q=0.8")
+	for k, v := range spec.Headers {
+		if strings.EqualFold(k, "Host") || strings.EqualFold(k, "Proxy-Authorization") || strings.EqualFold(k, "Accept-Encoding") {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
+	client := e.client
+	if client == nil {
+		client = New().client
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	return resp.StatusCode, nil
+}
+
+// Probe checks whether a book source is genuinely reachable on the network.
+// It returns (true, reason) if the host is alive and reachable, or (false, reason)
+// when the domain is dead, DNS fails, connection is refused/timed out, or HTTP returns dead status.
+func (e *Engine) Probe(ctx context.Context, s Source) (bool, string) {
+	var raw struct {
+		BookSourceURL string          `json:"bookSourceUrl"`
+		SearchURL     string          `json:"searchUrl"`
+		Header        json.RawMessage `json:"header"`
+	}
+	if len(s.Rule) == 0 || json.Unmarshal(s.Rule, &raw) != nil {
+		return false, "书源规则 JSON 损坏"
+	}
+	baseURL := strings.TrimSpace(raw.BookSourceURL)
+	if baseURL == "" {
+		return false, "缺少书源地址"
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || validURL(u) != nil {
+		return false, "书源网址无效或非公网地址"
+	}
+	if strings.TrimSpace(raw.SearchURL) == "" {
+		return false, "书源未配置搜索地址 (searchUrl)"
+	}
+
+	hdrs, _ := headers(raw.Header)
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	status, err := e.probeOnce(probeCtx, requestSpec{URL: baseURL, Method: "GET", Headers: hdrs})
+	if err == nil && status >= 200 && status < 500 && status != 404 && status != 410 {
+		return true, "站点连通正常"
+	}
+
+	// If base URL returned 404/410/5xx or failed, try probing the search endpoint before declaring dead
+	r := sourceRules{BookSourceURL: baseURL, SearchURL: raw.SearchURL, Header: raw.Header}
+	if spec, specErr := makeRequest(r, baseURL, raw.SearchURL, "测试", 1); specErr == nil {
+		sCtx, sCancel := context.WithTimeout(ctx, 10*time.Second)
+		sStatus, sErr := e.probeOnce(sCtx, spec)
+		sCancel()
+		if sErr == nil && sStatus >= 200 && sStatus < 500 && sStatus != 404 && sStatus != 410 {
+			return true, "搜索接口连通正常"
+		}
+		if err == nil {
+			err = sErr
+			status = sStatus
+		}
+	}
+
+	if err != nil {
+		msg := err.Error()
+		switch {
+		case strings.Contains(msg, "resolve destination") || strings.Contains(msg, "no such host") || strings.Contains(msg, "no addresses"):
+			return false, "域名无法解析或已注销"
+		case strings.Contains(msg, "connection refused"):
+			return false, "目标服务器拒绝连接"
+		case strings.Contains(msg, "tls:") || strings.Contains(msg, "x509:") || strings.Contains(msg, "certificate"):
+			return false, "SSL/TLS 证书失效或握手失败"
+		case strings.Contains(msg, "DeadlineExceeded") || strings.Contains(msg, "Client.Timeout") || strings.Contains(msg, "i/o timeout") || strings.Contains(msg, "context deadline exceeded"):
+			return false, "连接超时，站点无响应"
+		default:
+			return false, "网络无法连通"
+		}
+	}
+	return false, fmt.Sprintf("站点不可用 (HTTP %d)", status)
 }

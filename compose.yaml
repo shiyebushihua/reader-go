@@ -1,7 +1,7 @@
 services:
   reader:
     build: .
-    image: reader-go:0.0.7
+    image: reader-go:0.0.8
     restart: unless-stopped
     init: true
     ports:

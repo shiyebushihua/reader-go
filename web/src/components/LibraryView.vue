@@ -145,11 +145,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <header :class="['page-header', { 'shelf-header': !importMode }]">
+  <header :class="['page-header', importMode ? 'import-header' : 'shelf-header']">
     <div>
       <span class="eyebrow">{{ importMode ? 'BRING YOUR OWN STORIES' : 'THE PERSONAL COLLECTION' }}</span>
       <h1>{{ importMode ? '让好书，住进书架' : '我的书架' }}<span v-if="!importMode && !loading" class="count">{{ books.length }}</span></h1>
-      <p>{{ importMode ? '从你的设备导入，让阅读接着发生。' : '收藏每一次心动，续上每一段故事。' }}</p>
+      <p>{{ importMode ? '从你的设备导入 TXT 或 EPUB 电子书，随时随地接着读。' : '收藏每一次心动，续上每一段故事。' }}</p>
     </div>
     <a v-if="!importMode" class="button primary" href="#/import"><Plus :size="18" />导入书籍</a>
   </header>
@@ -164,28 +164,45 @@ onMounted(() => {
   <template v-if="importMode">
     <section class="import-grid">
       <form class="panel import-panel" @submit.prevent="upload">
-        <div :class="['dropzone', { dragging }]" @dragover.prevent="dragging = true" @dragleave.prevent="dragging = false" @drop.prevent="dropped">
-          <span class="round-icon"><Upload :size="28" /></span>
+        <div :class="['dropzone', { dragging, 'has-file': !!file }]" @dragover.prevent="dragging = true" @dragleave.prevent="dragging = false" @drop.prevent="dropped">
+          <span class="round-icon"><Upload :size="26" /></span>
           <h2>{{ file ? file.name : '把下一本好书带进来' }}</h2>
-          <p>{{ file ? `${(file.size / 1024 / 1024).toFixed(2)} MB · 已准备好导入` : '拖放 TXT / EPUB 文件到这里，或从设备中选择' }}</p>
+          <p>{{ file ? `${(file.size / 1024 / 1024).toFixed(2)} MB · 已准备好导入` : '拖放 TXT / EPUB 文件到这里，或点击下方按钮从设备中选择' }}</p>
           <label class="button secondary file-picker">
-            选择本地文件
+            <FileText :size="16" />
+            <span>{{ file ? '重新选择文件' : '选择本地文件 (.txt / .epub)' }}</span>
             <input type="file" accept=".txt,.epub" :disabled="importing" @change="select(($event.target as HTMLInputElement).files?.[0])" />
           </label>
         </div>
-        <button class="primary wide" :disabled="!file || importing">
-          <LoaderCircle v-if="importing" class="spin" />
+        <button class="primary wide import-submit-btn" :disabled="!file || importing">
+          <LoaderCircle v-if="importing" class="spin" :size="18" />
           <Upload v-else :size="18" />
           {{ importing ? '正在上传并解析，请稍候…' : '导入到我的书架' }}
         </button>
         <p class="fine-print">导入完成后直接加入书架。文件大小与章节限制由服务器校验。</p>
       </form>
 
-      <aside class="import-notes">
-        <span class="eyebrow">READ YOUR WAY</span>
-        <h2>熟悉的文字，<br>舒适的新居。</h2>
-        <div><FileText /><h3>TXT 纯文本</h3><p>支持 UTF-8 与 GBK 编码，自动识别章节。</p></div>
-        <div><BookOpen /><h3>EPUB 电子书</h3><p>解析目录与正文。当前以安全纯文本呈现，不保留复杂排版或插图。</p></div>
+      <aside class="panel import-notes">
+        <div class="import-notes-head">
+          <span class="eyebrow">READ YOUR WAY</span>
+          <h2>熟悉的文字，舒适的新居。</h2>
+        </div>
+        <div class="import-note-list">
+          <div class="import-note-card">
+            <span class="import-note-icon"><FileText :size="20" /></span>
+            <div class="import-note-text">
+              <h3>TXT 纯文本</h3>
+              <p>支持 UTF-8 与 GBK 编码，智能识别卷章目录。</p>
+            </div>
+          </div>
+          <div class="import-note-card">
+            <span class="import-note-icon"><BookOpen :size="20" /></span>
+            <div class="import-note-text">
+              <h3>EPUB 电子书</h3>
+              <p>解析目录与正文，以清爽护眼排版呈现。</p>
+            </div>
+          </div>
+        </div>
         <p class="fine-print">请仅导入你拥有合法阅读权利的内容。</p>
       </aside>
     </section>

@@ -1,4 +1,4 @@
--- Reader Go (阅间) MySQL 8.0+ Schema DDL (v0.0.7)
+-- Reader Go (阅间) MySQL 8.0+ Schema DDL (v0.0.8)
 -- Charset: utf8mb4 / Collation: utf8mb4_bin
 -- Usage:
 --   mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS reader CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"

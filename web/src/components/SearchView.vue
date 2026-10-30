@@ -7,7 +7,6 @@ import {
   Check,
   LoaderCircle,
   Globe2,
-  BookOpen,
   Square,
   ChevronDown,
   ChevronUp,
@@ -19,9 +18,10 @@ import {
   Radio,
   SlidersHorizontal,
   X,
-  CheckSquare
+  CheckSquare,
+  Clock
 } from 'lucide-vue-next'
-import { api, id, message, streamSearch, type StreamSearchProgress, type StreamSearchStart, type ApiMeta } from '../api'
+import { api, id, message, streamSearch, type StreamSearchProgress, type StreamSearchStart } from '../api'
 import type { Source, SearchResult, Book } from '../types'
 import BookCover from './BookCover.vue'
 
@@ -30,14 +30,6 @@ interface SourceStatus {
   name: string
   status: 'pending' | 'searching' | 'success' | 'error' | 'timeout'
   count: number
-  error?: string
-}
-
-interface ActivityLog {
-  id: number
-  time: string
-  text: string
-  type: 'searching' | 'success' | 'warn' | 'info'
 }
 
 const sources = ref<Source[]>([])
@@ -51,12 +43,13 @@ const stopped = ref(false)
 const error = ref('')
 const adding = ref('')
 const added = ref<Record<string, string>>({})
-const warnings = ref<NonNullable<ApiMeta['warnings']>>([])
 const searchedKeyword = ref('')
-const sourceFilter = ref<'all' | 'searching' | 'hasBooks' | 'failed'>('all')
+const sourceFilter = ref<'hasBooks' | 'searching' | 'all'>('hasBooks')
 
-// 搜索范围预设与自选
-const activePreset = ref<'top20' | 'top50' | 'all' | 'group' | 'custom'>('top20')
+// 搜索范围折叠卡片与超时控制
+const scopeExpanded = ref(false)
+const timeoutSeconds = ref(15)
+const activePreset = ref<'all' | 'top20' | 'top50' | 'group' | 'custom'>('all')
 const selectedGroup = ref('')
 const showPickerModal = ref(false)
 
@@ -66,7 +59,7 @@ const pickerGroup = ref('')
 const pickerPage = ref(1)
 const pickerPageSize = 5
 
-// 搜索结果分页状态
+// 搜索结果分页状态（保持每页 5 条不变）
 const resultPage = ref(1)
 const resultPageSize = ref(5)
 const hudExpanded = ref(false)
@@ -75,32 +68,44 @@ const sourceStatuses = ref<Record<string, SourceStatus>>({})
 const completedSources = ref(0)
 const totalSources = ref(0)
 const currentSearchingSource = ref('')
-const activityLogs = ref<ActivityLog[]>([])
 const searchSeconds = ref(0)
-
-const hotKeywords = ['斗破苍穹', '凡人修仙传', '完美世界', '诡秘之主', '大奉打更人']
 
 let abortCtrl: AbortController | null = null
 let timerId: ReturnType<typeof setInterval> | null = null
-let logCounter = 0
 
-function nowTimeString(): string {
-  const d = new Date()
-  const pad = (n: number) => (n < 10 ? '0' + n : String(n))
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+function normalizeMatchText(s: string): string {
+  return (s || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[《》「」『』（）()【】\[\]：:·\s\t]+/g, '')
 }
 
-function pushLog(text: string, type: ActivityLog['type']) {
-  logCounter++
-  activityLogs.value.unshift({
-    id: logCounter,
-    time: nowTimeString(),
-    text,
-    type
+function scoreResult(item: SearchResult, kwRaw: string): number {
+  const kw = normalizeMatchText(kwRaw)
+  if (!kw) return 0
+  const title = normalizeMatchText(item.title)
+  const author = normalizeMatchText(item.author)
+  if (!title) return 0
+  if (title === kw) return 100
+  if (title.startsWith(kw)) return 85
+  if (title.includes(kw)) return 75
+  if (author && author === kw) return 65
+  if (author && author.includes(kw)) return 55
+  if (title.length >= 2 && kw.includes(title)) return 40
+  return 0
+}
+
+function isExactMatch(item: SearchResult): boolean {
+  return scoreResult(item, searchedKeyword.value) === 100
+}
+
+function sortResultsByRelevance(list: SearchResult[], kw: string): SearchResult[] {
+  return [...list].sort((a, b) => {
+    const sa = scoreResult(a, kw)
+    const sb = scoreResult(b, kw)
+    if (sa !== sb) return sb - sa
+    return (a.title?.length || 0) - (b.title?.length || 0)
   })
-  if (activityLogs.value.length > 20) {
-    activityLogs.value.pop()
-  }
 }
 
 const enabled = computed(() => sources.value.filter(s => s.enabled))
@@ -111,6 +116,14 @@ const sourceGroups = computed(() => {
     if (s.group && s.group.trim()) set.add(s.group.trim())
   }
   return Array.from(set).sort()
+})
+
+const scopePresetLabel = computed(() => {
+  if (activePreset.value === 'all') return '全部可用源'
+  if (activePreset.value === 'top20') return '前 20 源'
+  if (activePreset.value === 'top50') return '前 50 源'
+  if (activePreset.value === 'group') return `分组：${selectedGroup.value || '全部'}`
+  return `自定义 (${selected.value.length} 源)`
 })
 
 // 书源选择器弹窗内的过滤与分页
@@ -156,12 +169,8 @@ const progressPercent = computed(() => {
   return Math.min(100, Math.round((completedSources.value / totalSources.value) * 100))
 })
 
-const successSourcesCount = computed(() => {
-  return Object.values(sourceStatuses.value).filter(s => s.status === 'success').length
-})
-
-const failedSourcesCount = computed(() => {
-  return Object.values(sourceStatuses.value).filter(s => s.status === 'error' || s.status === 'timeout').length
+const hitSourcesCount = computed(() => {
+  return Object.values(sourceStatuses.value).filter(s => s.status === 'success' && s.count > 0).length
 })
 
 const activeSearchingSources = computed(() => {
@@ -174,10 +183,8 @@ const filteredSourceStatuses = computed(() => {
     return list.filter(s => s.status === 'searching')
   }
   if (sourceFilter.value === 'hasBooks') {
-    return list.filter(s => s.status === 'success' && s.count > 0)
-  }
-  if (sourceFilter.value === 'failed') {
-    return list.filter(s => s.status === 'error' || s.status === 'timeout')
+    const hits = list.filter(s => s.status === 'success' && s.count > 0)
+    return hits.length ? hits : list.filter(s => s.status === 'searching' || s.count > 0)
   }
   return list
 })
@@ -189,7 +196,7 @@ async function load() {
   error.value = ''
   try {
     sources.value = await api<Source[]>('/sources') || []
-    applyPreset('top20')
+    applyPreset('all')
   } catch (e) {
     error.value = message(e)
   } finally {
@@ -197,22 +204,15 @@ async function load() {
   }
 }
 
-function applyPreset(preset: 'top20' | 'top50' | 'all' | 'group' | 'custom') {
+function applyPreset(preset: 'all' | 'top20' | 'top50' | 'group' | 'custom') {
   activePreset.value = preset
   const all = enabled.value
-  if (preset === 'top20') {
-    const liudaIndex = all.findIndex(s => s.name.includes('溜达'))
-    if (liudaIndex > 0) {
-      const liuda = all[liudaIndex]
-      const rest = all.filter((_, i) => i !== liudaIndex)
-      selected.value = [liuda.id, ...rest.slice(0, 19).map(s => s.id)]
-    } else {
-      selected.value = all.slice(0, 20).map(s => s.id)
-    }
+  if (preset === 'all') {
+    selected.value = all.map(s => s.id)
+  } else if (preset === 'top20') {
+    selected.value = all.slice(0, 20).map(s => s.id)
   } else if (preset === 'top50') {
     selected.value = all.slice(0, 50).map(s => s.id)
-  } else if (preset === 'all') {
-    selected.value = all.map(s => s.id)
   } else if (preset === 'group') {
     if (selectedGroup.value) {
       selected.value = all.filter(s => s.group === selectedGroup.value).map(s => s.id)
@@ -226,6 +226,8 @@ function onGroupSelectChange(e: Event) {
   if (g) {
     activePreset.value = 'group'
     applyPreset('group')
+  } else {
+    applyPreset('all')
   }
 }
 
@@ -286,7 +288,6 @@ function stopSearch() {
   stopped.value = true
   currentSearchingSource.value = ''
   searched.value = true
-  pushLog(`搜索已由用户主动停止。当前已保留 ${results.value.length} 本书籍。`, 'info')
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -297,11 +298,6 @@ function handleKeydown(e: KeyboardEvent) {
       stopSearch()
     }
   }
-}
-
-function useHotKeyword(kw: string) {
-  keyword.value = kw
-  search()
 }
 
 function changeResultPage(p: number) {
@@ -321,21 +317,19 @@ async function search() {
   const kw = keyword.value.trim()
   if (!kw || !selected.value.length) return
 
-  // 限制单次检索最多 100 个书源以保证高吞吐性能
   const targetIds = selected.value.slice(0, 100)
 
   searching.value = true
   stopped.value = false
   error.value = ''
-  warnings.value = []
   searched.value = false
   results.value = []
   resultPage.value = 1
-  activityLogs.value = []
   searchedKeyword.value = kw
   completedSources.value = 0
   totalSources.value = targetIds.length
   searchSeconds.value = 0
+  sourceFilter.value = 'hasBooks'
 
   const statuses: Record<string, SourceStatus> = {}
   for (const sid of targetIds) {
@@ -349,8 +343,6 @@ async function search() {
   }
   sourceStatuses.value = statuses
 
-  pushLog(`启动并发流式搜索《${kw}》，已连接 ${targetIds.length} 个书源…`, 'info')
-
   if (timerId) clearInterval(timerId)
   const startTime = Date.now()
   timerId = setInterval(() => {
@@ -361,11 +353,10 @@ async function search() {
 
   try {
     await streamSearch(
-      { keyword: kw, sourceIds: targetIds },
+      { keyword: kw, sourceIds: targetIds, timeoutSeconds: timeoutSeconds.value },
       {
         onStart: (data: StreamSearchStart) => {
           totalSources.value = data.total
-          pushLog(`引擎就绪：开启 16 线程并发通道全速检索…`, 'searching')
         },
         onProgress: (p: StreamSearchProgress) => {
           completedSources.value = p.completed
@@ -373,32 +364,24 @@ async function search() {
           const target = sourceStatuses.value[p.sourceId]
           if (target) {
             target.status = p.status
-            if (p.count) target.count = p.count
-            if (p.error) target.error = p.error
-          }
-
-          if (p.status === 'searching') {
-            pushLog(`正在检索书源 [${p.sourceName}]…`, 'searching')
-          } else if (p.status === 'success') {
-            if (p.count && p.count > 0) {
-              pushLog(`✨ [${p.sourceName}] 成功命中 ${p.count} 本相关图书！`, 'success')
-            } else {
-              pushLog(`[${p.sourceName}] 检索完毕，未收录此书`, 'info')
-            }
-          } else if (p.status === 'timeout' || p.status === 'error') {
-            const err = p.error || (p.status === 'timeout' ? '超时' : '请求失败')
-            pushLog(`⚠️ [${p.sourceName}] ${err}，已跳过`, 'warn')
-            warnings.value.push({ sourceId: p.sourceId, message: err })
+            if (p.count !== undefined) target.count = p.count
           }
 
           if (p.results && p.results.length > 0) {
             const existingKeys = new Set(results.value.map(r => key(r)))
+            const merged = [...results.value]
+            let addedAny = false
             for (const item of p.results) {
+              if (scoreResult(item, kw) <= 0) continue
               const k = key(item)
               if (!existingKeys.has(k)) {
-                results.value.push(item)
+                merged.push(item)
                 existingKeys.add(k)
+                addedAny = true
               }
+            }
+            if (addedAny) {
+              results.value = sortResultsByRelevance(merged, kw)
             }
           }
         },
@@ -411,7 +394,6 @@ async function search() {
             timerId = null
           }
           abortCtrl = null
-          pushLog(`搜索完成！共检索 ${completedSources.value} 个书源，累计发现 ${results.value.length} 本图书。`, 'success')
         }
       },
       abortCtrl.signal
@@ -420,16 +402,18 @@ async function search() {
     if (abortCtrl?.signal.aborted) {
       return
     }
-    // 降级使用基础同步检索
-    pushLog(`流式通道中断，尝试降级兼容检索…`, 'warn')
     try {
-      results.value = await api<SearchResult[]>('/search', 'POST', {
+      const fallback = await api<SearchResult[]>('/search', 'POST', {
         keyword: kw,
-        sourceIds: targetIds
-      }, meta => warnings.value = meta.warnings || []) || []
+        sourceIds: targetIds,
+        timeoutSeconds: timeoutSeconds.value
+      }) || []
+      results.value = sortResultsByRelevance(
+        fallback.filter(item => scoreResult(item, kw) > 0),
+        kw
+      )
     } catch (err) {
       error.value = message(err)
-      pushLog(`检索异常：${message(err)}`, 'warn')
     }
   } finally {
     searching.value = false
@@ -469,128 +453,167 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <header class="page-header">
+  <header class="page-header search-page-header">
     <div>
       <span class="eyebrow">FIND YOUR NEXT CHAPTER</span>
       <h1>发现好书</h1>
-      <p>在你信任的书源里，寻找下一段值得沉浸的故事。</p>
+      <p>输入准确书名或作者，在你的个人书源中智能匹配最佳结果。</p>
     </div>
-    <Globe2 class="header-symbol" :size="40" :stroke-width="1" />
+    <Globe2 class="header-symbol" :size="38" :stroke-width="1.2" />
   </header>
 
   <form class="panel search-panel" @submit.prevent="search">
-    <div class="large-search">
-      <Search :size="23" />
-      <input
-        v-model="keyword"
-        required
-        aria-label="搜索书名或作者"
-        placeholder="输入书名或作者，开始寻找…"
-      />
+    <!-- 高对比度一体化搜书输入框（放大镜与输入框合体） -->
+    <div class="search-bar-row">
+      <div class="search-input-box">
+        <span class="search-icon-slot" aria-hidden="true">
+          <Search :size="20" />
+        </span>
+        <input
+          v-model="keyword"
+          required
+          aria-label="搜索书名或作者"
+          placeholder="输入准确书名或作者名，例如：凡人修仙传…"
+        />
+        <button
+          v-if="keyword && !searching"
+          type="button"
+          class="search-clear-btn"
+          aria-label="清空输入"
+          @click="keyword = ''"
+        >
+          <X :size="16" />
+        </button>
+      </div>
+
       <button
         v-if="searching"
         type="button"
-        class="search-stop-btn"
+        class="search-stop-btn search-main-btn"
         @click="stopSearch"
       >
         <Square :size="16" />
-        停止搜索 (Esc)
+        <span>停止 (Esc)</span>
       </button>
       <button
         v-else
         type="submit"
-        class="primary"
+        class="primary search-main-btn"
         :disabled="loading || !selected.length || !keyword.trim()"
       >
-        搜索
+        <span>搜索好书</span>
         <ArrowRight :size="18" />
       </button>
     </div>
 
-    <!-- 热门搜索推荐 -->
-    <div class="hot-keywords">
-      <span class="hot-label">大家都在搜：</span>
+    <!-- 上下折叠式「搜索范围与超时设置」卡片 -->
+    <div class="scope-collapse-card">
       <button
-        v-for="kw in hotKeywords"
-        :key="kw"
         type="button"
-        class="hot-chip"
-        :disabled="searching"
-        @click="useHotKeyword(kw)"
+        class="scope-collapse-header"
+        :aria-expanded="scopeExpanded"
+        @click="scopeExpanded = !scopeExpanded"
       >
-        {{ kw }}
+        <div class="scope-header-left">
+          <SlidersHorizontal :size="15" class="scope-header-icon" />
+          <span class="scope-header-title">搜索范围与检索设置</span>
+          <span class="scope-summary-pill">
+            {{ scopePresetLabel }} · {{ selected.length }}/{{ enabled.length }} 源
+          </span>
+          <span class="scope-summary-pill muted-pill">
+            <Clock :size="12" /> 超时 {{ timeoutSeconds }}s
+          </span>
+        </div>
+        <div class="scope-header-right">
+          <span>{{ scopeExpanded ? '收起' : '展开调整' }}</span>
+          <ChevronUp v-if="scopeExpanded" :size="16" />
+          <ChevronDown v-else :size="16" />
+        </div>
       </button>
-    </div>
 
-    <!-- 现代书源选择范围：预设标签栏 + 自选弹窗，彻底告别丑陋平铺 -->
-    <div class="source-scope-section">
-      <div class="source-scope-header">
-        <span class="source-scope-title">
-          搜索范围
-          <small class="source-scope-count">
-            已就绪 {{ selected.length }} / {{ enabled.length }} 个书源
-          </small>
-        </span>
+      <div v-show="scopeExpanded" class="scope-collapse-body">
+        <div class="scope-setting-row">
+          <span class="scope-row-label">书源范围</span>
+          <div class="source-scope-presets">
+            <button
+              type="button"
+              :class="['scope-tab-btn', { active: activePreset === 'all' }]"
+              :disabled="searching || !enabled.length"
+              @click="applyPreset('all')"
+            >
+              🚀 全部可用 ({{ enabled.length }})
+            </button>
+            <button
+              type="button"
+              :class="['scope-tab-btn', { active: activePreset === 'top20' }]"
+              :disabled="searching || !enabled.length"
+              @click="applyPreset('top20')"
+            >
+              ⚡ 前 20 源
+            </button>
+            <button
+              type="button"
+              :class="['scope-tab-btn', { active: activePreset === 'top50' }]"
+              :disabled="searching || !enabled.length"
+              @click="applyPreset('top50')"
+            >
+              🌐 前 50 源
+            </button>
 
-        <div class="source-scope-presets">
-          <button
-            type="button"
-            :class="['scope-tab-btn', { active: activePreset === 'top20' }]"
-            :disabled="searching || !enabled.length"
-            @click="applyPreset('top20')"
-          >
-            ⚡ 精选20源
-          </button>
-          <button
-            type="button"
-            :class="['scope-tab-btn', { active: activePreset === 'top50' }]"
-            :disabled="searching || !enabled.length"
-            @click="applyPreset('top50')"
-          >
-            🌐 主流50源
-          </button>
-          <button
-            type="button"
-            :class="['scope-tab-btn', { active: activePreset === 'all' }]"
-            :disabled="searching || !enabled.length"
-            @click="applyPreset('all')"
-          >
-            🚀 全部可用 ({{ enabled.length }})
-          </button>
+            <select
+              v-if="sourceGroups.length"
+              class="scope-group-select"
+              :value="activePreset === 'group' ? selectedGroup : ''"
+              :disabled="searching"
+              aria-label="按书源分组筛选"
+              @change="onGroupSelectChange"
+            >
+              <option value="">📂 按分组筛选…</option>
+              <option v-for="g in sourceGroups" :key="g" :value="g">
+                {{ g }} ({{ enabled.filter(s => s.group === g).length }})
+              </option>
+            </select>
 
-          <!-- 分组快速过滤下拉 -->
-          <select
-            v-if="sourceGroups.length"
-            class="scope-group-select"
-            :value="activePreset === 'group' ? selectedGroup : ''"
-            :disabled="searching"
-            @change="onGroupSelectChange"
-          >
-            <option value="">📂 按分组筛选…</option>
-            <option v-for="g in sourceGroups" :key="g" :value="g">
-              {{ g }} ({{ enabled.filter(s => s.group === g).length }})
-            </option>
-          </select>
+            <button
+              type="button"
+              :class="['scope-tab-btn', 'picker-trigger-btn', { active: activePreset === 'custom' }]"
+              :disabled="searching || !enabled.length"
+              @click="openPicker"
+            >
+              <SlidersHorizontal :size="14" />
+              自选书源
+              <span v-if="activePreset === 'custom'" class="picker-count-tag">
+                {{ selected.length }}
+              </span>
+            </button>
+          </div>
+        </div>
 
-          <!-- 自选书源（分页弹窗） -->
-          <button
-            type="button"
-            :class="['scope-tab-btn', 'picker-trigger-btn', { active: activePreset === 'custom' }]"
-            :disabled="searching || !enabled.length"
-            @click="openPicker"
-          >
-            <SlidersHorizontal :size="14" />
-            自选书源
-            <span v-if="activePreset === 'custom'" class="picker-count-tag">
-              {{ selected.length }}
-            </span>
-          </button>
+        <div class="scope-setting-row">
+          <span class="scope-row-label">单源超时</span>
+          <div class="source-scope-presets">
+            <button
+              v-for="opt in [
+                { val: 10, label: '10秒 · 极速' },
+                { val: 15, label: '15秒 · 推荐' },
+                { val: 25, label: '25秒 · 慢源兼容' },
+                { val: 35, label: '35秒 · 深度等待' }
+              ]"
+              :key="opt.val"
+              type="button"
+              :class="['scope-tab-btn', { active: timeoutSeconds === opt.val }]"
+              :disabled="searching"
+              @click="timeoutSeconds = opt.val"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
         </div>
       </div>
 
-      <p v-if="loading" role="status" class="muted">正在读取可用书源…</p>
-      <p v-else-if="!enabled.length" class="muted">
-        暂无可用书源。请前往 <a href="#/sources" style="color: var(--accent); font-weight: 600;">我的书源</a> 导入并启用属于你的书源。
+      <p v-if="loading" role="status" class="scope-empty-tip muted">正在读取可用书源…</p>
+      <p v-else-if="!enabled.length" class="scope-empty-tip muted">
+        暂无可用书源。请先前往 <a href="#/sources" class="accent-link">我的书源</a> 导入并启用属于你的书源。
       </p>
     </div>
   </form>
@@ -600,24 +623,24 @@ onUnmounted(() => {
     <button v-if="!sources.length" class="text-button" @click="load">重新读取书源</button>
   </div>
 
-  <!-- 实时流式交互监控 HUD 面板 -->
+  <!-- 简洁清爽的检索进度与动态面板 -->
   <section v-if="searching || (searched && results.length > 0) || stopped" class="search-hud" aria-live="polite">
     <div class="search-hud-header">
       <div class="search-hud-status">
         <span v-if="searching" class="search-pulse-dot"></span>
-        <Check v-else-if="!stopped" :size="18" style="color: #2a9d8f;" />
-        <AlertCircle v-else :size="18" style="color: #e76f51;" />
+        <Check v-else-if="!stopped" :size="18" class="hud-icon-success" />
+        <AlertCircle v-else :size="18" class="hud-icon-warn" />
         <span v-if="searching">
-          正在检索：<strong>{{ currentSearchingSource || '并发连线中…' }}</strong>
-          <small class="muted" style="margin-left: 6px;">
-            (16并发 / 耗时 {{ searchSeconds }}s)
+          正在精准匹配《<strong>{{ searchedKeyword }}</strong>》
+          <small class="muted">
+            · 已找到 <strong>{{ results.length }}</strong> 本相关书籍 ({{ completedSources }}/{{ totalSources }} 源 · {{ searchSeconds }}s)
           </small>
         </span>
         <span v-else-if="stopped">
-          已停止检索：耗时 {{ searchSeconds }}s，在 {{ completedSources }} 个书源中保留 <strong>{{ results.length }}</strong> 本书籍
+          检索已停止：共找到 <strong>{{ results.length }}</strong> 本与《{{ searchedKeyword }}》相关的书籍（耗时 {{ searchSeconds }}s）
         </span>
         <span v-else>
-          检索完成：耗时 {{ searchSeconds }}s，在 {{ completedSources }} 个书源中找到 <strong>{{ results.length }}</strong> 本书籍
+          检索完成：共找到 <strong>{{ results.length }}</strong> 本与《{{ searchedKeyword }}》相关的书籍（耗时 {{ searchSeconds }}s）
         </span>
       </div>
       <div class="search-hud-actions">
@@ -627,8 +650,8 @@ onUnmounted(() => {
           class="search-stop-btn"
           @click="stopSearch"
         >
-          <Square :size="14" />
-          停止检索
+          <Square :size="13" />
+          就看这些
         </button>
         <button
           type="button"
@@ -636,16 +659,13 @@ onUnmounted(() => {
           @click="hudExpanded = !hudExpanded"
           :aria-expanded="hudExpanded"
         >
-          <span>{{ hudExpanded ? '收起书源动态' : '展开书源动态' }}</span>
-          <ChevronUp v-if="hudExpanded" :size="15" />
-          <ChevronDown v-else :size="15" />
+          <span>{{ hudExpanded ? '收起动态' : '书源动态' }}</span>
+          <ChevronUp v-if="hudExpanded" :size="14" />
+          <ChevronDown v-else :size="14" />
         </button>
       </div>
     </div>
 
-    <div v-show="hudExpanded" class="search-hud-details">
-
-    <!-- 动态进度条 -->
     <div class="stream-progress-track">
       <div
         class="stream-progress-fill"
@@ -653,108 +673,74 @@ onUnmounted(() => {
       ></div>
     </div>
 
-    <!-- 聚合指标面板 -->
-    <div class="search-hud-metrics">
-      <div class="metric-item">
-        <span class="metric-num">{{ completedSources }} / {{ totalSources }}</span>
-        <span class="metric-label">已扫描书源</span>
-      </div>
-      <div class="metric-item">
-        <span class="metric-num success-text">{{ successSourcesCount }}</span>
-        <span class="metric-label">响应成功</span>
-      </div>
-      <div class="metric-item">
-        <span class="metric-num warn-text">{{ failedSourcesCount }}</span>
-        <span class="metric-label">跳过 / 超时</span>
-      </div>
-      <div class="metric-item">
-        <span class="metric-num highlight-text">{{ results.length }}</span>
-        <span class="metric-label">发现书籍</span>
-      </div>
-    </div>
-
-    <!-- 实时滚动活动流水日志 -->
-    <div v-if="activityLogs.length" class="activity-ticker">
-      <div class="ticker-header">
-        <span class="ticker-title">
-          <Zap :size="13" /> 检索动态流水 (最近 {{ activityLogs.length }} 条)
-        </span>
-        <span v-if="searching" class="ticker-badge">实时更新中</span>
-      </div>
-      <div class="ticker-window">
-        <div
-          v-for="log in activityLogs"
-          :key="log.id"
-          :class="['ticker-line', log.type]"
-        >
-          <time class="ticker-time">{{ log.time }}</time>
-          <span class="ticker-text">{{ log.text }}</span>
+    <!-- 展开后的精简书源动态卡片 -->
+    <div v-show="hudExpanded" class="search-hud-details">
+      <div class="hud-stat-grid">
+        <div class="hud-stat-card">
+          <span class="hud-stat-label">检索进度</span>
+          <strong class="hud-stat-val">{{ completedSources }} / {{ totalSources }}</strong>
+        </div>
+        <div class="hud-stat-card">
+          <span class="hud-stat-label">命中书源</span>
+          <strong class="hud-stat-val success">{{ hitSourcesCount }} 个</strong>
+        </div>
+        <div class="hud-stat-card">
+          <span class="hud-stat-label">匹配书籍</span>
+          <strong class="hud-stat-val highlight">{{ results.length }} 本</strong>
         </div>
       </div>
-    </div>
 
-    <!-- 书源状态过滤标签 -->
-    <div class="stream-filter-bar">
-      <span class="stream-filter-label">状态过滤：</span>
-      <button
-        type="button"
-        :class="['filter-pill', { active: sourceFilter === 'all' }]"
-        @click="sourceFilter = 'all'"
-      >
-        全部 ({{ Object.keys(sourceStatuses).length }})
-      </button>
-      <button
-        v-if="activeSearchingSources.length > 0"
-        type="button"
-        :class="['filter-pill', { active: sourceFilter === 'searching' }]"
-        @click="sourceFilter = 'searching'"
-      >
-        检索中 ({{ activeSearchingSources.length }})
-      </button>
-      <button
-        type="button"
-        :class="['filter-pill', { active: sourceFilter === 'hasBooks' }]"
-        @click="sourceFilter = 'hasBooks'"
-      >
-        有结果 ({{ Object.values(sourceStatuses).filter(s => s.count > 0).length }})
-      </button>
-      <button
-        type="button"
-        :class="['filter-pill', { active: sourceFilter === 'failed' }]"
-        @click="sourceFilter = 'failed'"
-      >
-        异常 / 超时 ({{ failedSourcesCount }})
-      </button>
-    </div>
-
-    <!-- 选定书源实时状态流徽章 -->
-    <div v-if="filteredSourceStatuses.length" class="stream-source-flow">
-      <span
-        v-for="s in filteredSourceStatuses"
-        :key="s.id"
-        :class="[
-          'stream-badge',
-          s.status === 'searching' ? 'searching' :
-          s.status === 'success' ? (s.count > 0 ? 'success' : 'empty') :
-          s.status === 'error' || s.status === 'timeout' ? 'error' : 'pending'
-        ]"
-      >
-        <LoaderCircle v-if="s.status === 'searching'" class="spin" :size="12" />
-        <Check v-else-if="s.status === 'success' && s.count > 0" :size="12" />
-        {{ s.name }}
-        <strong v-if="s.count > 0">+{{ s.count }}</strong>
-        <small v-else-if="s.status === 'error'">跳过</small>
-        <small v-else-if="s.status === 'timeout'">超时</small>
-      </span>
+      <div class="stream-filter-bar">
+        <span class="stream-filter-label">查看书源：</span>
+        <button
+          type="button"
+          :class="['filter-pill', { active: sourceFilter === 'hasBooks' }]"
+          @click="sourceFilter = 'hasBooks'"
+        >
+          有结果 ({{ hitSourcesCount }})
+        </button>
+        <button
+          v-if="activeSearchingSources.length > 0"
+          type="button"
+          :class="['filter-pill', { active: sourceFilter === 'searching' }]"
+          @click="sourceFilter = 'searching'"
+        >
+          检索中 ({{ activeSearchingSources.length }})
+        </button>
+        <button
+          type="button"
+          :class="['filter-pill', { active: sourceFilter === 'all' }]"
+          @click="sourceFilter = 'all'"
+        >
+          全部已选 ({{ Object.keys(sourceStatuses).length }})
+        </button>
       </div>
+
+      <div v-if="filteredSourceStatuses.length" class="stream-source-flow">
+        <span
+          v-for="s in filteredSourceStatuses"
+          :key="s.id"
+          :class="[
+            'stream-badge',
+            s.status === 'searching' ? 'searching' :
+            s.status === 'success' && s.count > 0 ? 'success' : 'empty'
+          ]"
+        >
+          <LoaderCircle v-if="s.status === 'searching'" class="spin" :size="12" />
+          <Check v-else-if="s.status === 'success' && s.count > 0" :size="12" />
+          <span class="stream-badge-name">{{ s.name }}</span>
+          <strong v-if="s.count > 0">+{{ s.count }}</strong>
+        </span>
+      </div>
+      <p v-else class="muted" style="font-size: 12px;">暂无符合当前筛选条件的书源。</p>
     </div>
   </section>
 
-  <!-- 搜索中首批等待骨架屏 (Skeleton Shimmer) -->
+  <!-- 搜索中首批等待骨架屏 -->
   <div v-if="searching && results.length === 0" class="search-skeleton-container">
     <div class="search-skeleton-tip">
       <Radio class="spin" :size="16" style="color: var(--accent);" />
-      <span>正在 16 线程并发检索各书源，抓取《{{ searchedKeyword }}》中，首批书籍即将抵达…</span>
+      <span>正在并发检索《{{ searchedKeyword }}》，自动过滤无关结果，精准好书即将呈现…</span>
     </div>
     <div class="search-skeleton-grid">
       <div v-for="n in 4" :key="n" class="skeleton-card">
@@ -769,48 +755,23 @@ onUnmounted(() => {
     </div>
   </div>
 
-  <!-- 边搜边看流式提示横幅 (Live Streaming Banner) -->
-  <div v-if="searching && results.length > 0" class="stream-live-banner">
-    <div class="stream-live-banner-content">
-      <Zap :size="18" style="color: var(--accent);" />
-      <span>
-        已实时捕获 <strong>{{ results.length }}</strong> 本图书！其余书源仍在继续检索中，您可以直接加入书架或点击阅读，无需等待全部完成。
-      </span>
-    </div>
-    <button type="button" class="search-stop-btn" @click="stopSearch">
-      <Square :size="14" />
-      就看这些 (停止检索)
-    </button>
-  </div>
-
-  <!-- 警告提示 -->
-  <div v-if="warnings.length && !searching" class="warning" role="alert">
-    <strong>部分书源未能完成搜索，已为您展示其它可用结果：</strong>
-    <ul>
-      <li v-for="(warning, i) in warnings" :key="i">
-        {{ sources.find(s => s.id === warning.sourceId)?.name || warning.sourceId || '书源' }}：{{ warning.message }}
-      </li>
-    </ul>
-  </div>
-
   <!-- 锚点 -->
   <div id="search-results-anchor"></div>
 
-  <!-- 搜索结果列表（带分页器） -->
+  <!-- 搜索结果列表（按匹配度精准排序 + 分页器） -->
   <template v-if="results.length > 0">
     <div class="section-heading search-result-head">
       <div>
         <h2>
           搜索结果 <span class="count">{{ results.length }}</span>
         </h2>
-        <span class="muted">“{{ searchedKeyword }}”</span>
+        <span class="muted">按《{{ searchedKeyword }}》书名与作者相关度精准排序</span>
       </div>
 
-      <!-- 每页显示数量选择 -->
       <div class="result-pagination-ctrls">
         <label class="page-size-label">
-          每页显示
-          <select v-model.number="resultPageSize" @change="resultPage = 1">
+          <span>每页</span>
+          <select v-model.number="resultPageSize" class="page-size-select" @change="resultPage = 1">
             <option :value="3">3 本</option>
             <option :value="5">5 本</option>
             <option :value="10">10 本</option>
@@ -821,7 +782,6 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 当前页结果网格 -->
     <div class="result-grid">
       <article
         v-for="(result, index) in pagedResults"
@@ -829,86 +789,91 @@ onUnmounted(() => {
         class="panel result-card"
       >
         <BookCover :title="result.title" :index="index + (resultPage - 1) * resultPageSize" />
-        <div>
-          <span class="tag">
-            {{ sources.find(s => s.id === result.sourceId)?.name || '在线书源' }}
-          </span>
-          <span v-if="searching" class="live-badge">
-            <Sparkles :size="10" /> 实时捕获
-          </span>
+        <div class="result-card-body">
+          <div class="result-card-tags">
+            <span v-if="isExactMatch(result)" class="exact-match-badge">
+              <Sparkles :size="11" /> 精准匹配
+            </span>
+            <span class="tag">
+              {{ sources.find(s => s.id === result.sourceId)?.name || '在线书源' }}
+            </span>
+          </div>
           <h2>{{ result.title }}</h2>
-          <p class="muted">{{ result.author || '佚名' }}</p>
+          <p class="muted result-author">{{ result.author || '佚名' }}</p>
           <p class="result-intro">{{ result.intro || '书源暂未提供简介。' }}</p>
-          <a
-            v-if="added[key(result)]"
-            class="button secondary"
-            :href="`#/book/${id(added[key(result)])}`"
-          >
-            <Check :size="16" />
-            已在书架 · 立即阅读
-          </a>
-          <button
-            v-else
-            class="primary"
-            :disabled="adding === key(result)"
-            @click="add(result)"
-          >
-            <LoaderCircle v-if="adding === key(result)" class="spin" />
-            <Plus v-else :size="16" />
-            加入书架
-          </button>
+          <div class="result-card-action">
+            <a
+              v-if="added[key(result)]"
+              class="button secondary"
+              :href="`#/book/${id(added[key(result)])}`"
+            >
+              <Check :size="16" />
+              已在书架 · 立即阅读
+            </a>
+            <button
+              v-else
+              class="primary"
+              :disabled="adding === key(result)"
+              @click="add(result)"
+            >
+              <LoaderCircle v-if="adding === key(result)" class="spin" :size="16" />
+              <Plus v-else :size="16" />
+              加入书架
+            </button>
+          </div>
         </div>
       </article>
     </div>
 
     <!-- 搜索结果分页导航栏 -->
     <div v-if="totalResultPages > 1" class="pagination-bar">
-      <button
-        type="button"
-        class="page-nav-btn"
-        :disabled="resultPage <= 1"
-        @click="changeResultPage(1)"
-      >
-        首页
-      </button>
-      <button
-        type="button"
-        class="page-nav-btn"
-        :disabled="resultPage <= 1"
-        @click="changeResultPage(resultPage - 1)"
-      >
-        <ChevronLeft :size="16" />
-        上一页
-      </button>
-
-      <span class="page-indicator">
-        第 <strong>{{ resultPage }}</strong> / {{ totalResultPages }} 页
-      </span>
-
-      <button
-        type="button"
-        class="page-nav-btn"
-        :disabled="resultPage >= totalResultPages"
-        @click="changeResultPage(resultPage + 1)"
-      >
-        下一页
-        <ChevronRight :size="16" />
-      </button>
-      <button
-        type="button"
-        class="page-nav-btn"
-        :disabled="resultPage >= totalResultPages"
-        @click="changeResultPage(totalResultPages)"
-      >
-        末页
-      </button>
+      <div class="pagination-info">
+        <span>第 <strong>{{ resultPage }}</strong> / {{ totalResultPages }} 页（共 {{ results.length }} 本匹配书籍）</span>
+      </div>
+      <div class="pagination-controls">
+        <button
+          type="button"
+          class="secondary pagination-btn"
+          :disabled="resultPage <= 1"
+          @click="changeResultPage(1)"
+        >
+          首页
+        </button>
+        <button
+          type="button"
+          class="secondary pagination-btn"
+          :disabled="resultPage <= 1"
+          @click="changeResultPage(resultPage - 1)"
+        >
+          <ChevronLeft :size="16" />
+          上一页
+        </button>
+        <span class="pagination-current">{{ resultPage }}</span>
+        <button
+          type="button"
+          class="secondary pagination-btn"
+          :disabled="resultPage >= totalResultPages"
+          @click="changeResultPage(resultPage + 1)"
+        >
+          下一页
+          <ChevronRight :size="16" />
+        </button>
+        <button
+          type="button"
+          class="secondary pagination-btn"
+          :disabled="resultPage >= totalResultPages"
+          @click="changeResultPage(totalResultPages)"
+        >
+          末页
+        </button>
+      </div>
     </div>
   </template>
 
   <section v-else-if="searched && !searching && !error" class="empty">
     <Search :size="32" />
-    <h2>未找到匹配的书籍</h2>
-    <p>可以尝试更换书名关键词，或在上方切换至“全部可用”扩大搜索范围。</p>
+    <h2>未找到与《{{ searchedKeyword }}》匹配的书籍</h2>
+    <p>系统已自动过滤无关结果。可尝试检查书名错别字、展开上方「搜索范围」调高单源超时（如 25 秒），或前往「我的书源」补充书源。</p>
   </section>
 
   <!-- 自选书源分页挑选器弹窗 (Modal) -->
@@ -927,7 +892,6 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <!-- 弹窗内过滤工具栏 -->
       <div class="picker-toolbar">
         <div class="picker-search-input">
           <Search :size="16" />
@@ -946,7 +910,6 @@ onUnmounted(() => {
         </select>
       </div>
 
-      <!-- 批量勾选工具条 -->
       <div class="picker-batch-bar">
         <span class="picker-batch-info">
           匹配到 {{ filteredPickerSources.length }} 个可用书源
@@ -967,7 +930,6 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 分页书源列表卡片 -->
       <div class="picker-source-grid">
         <div
           v-for="s in pagedPickerSources"
@@ -987,11 +949,10 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 弹窗分页控制 -->
       <div v-if="pickerTotalPages > 1" class="picker-pagination">
         <button
           type="button"
-          class="page-nav-btn small"
+          class="secondary pagination-btn"
           :disabled="pickerPage <= 1"
           @click="pickerPage--"
         >
@@ -999,11 +960,11 @@ onUnmounted(() => {
           上一页
         </button>
         <span class="picker-page-text">
-          {{ pickerPage }} / {{ pickerTotalPages }}
+          第 {{ pickerPage }} / {{ pickerTotalPages }} 页
         </span>
         <button
           type="button"
-          class="page-nav-btn small"
+          class="secondary pagination-btn"
           :disabled="pickerPage >= pickerTotalPages"
           @click="pickerPage++"
         >
@@ -1012,7 +973,6 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <!-- 弹窗底部操作 -->
       <div class="modal-actions picker-modal-footer">
         <button type="button" class="button secondary" @click="showPickerModal = false">
           取消

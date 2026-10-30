@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import {
   Users,
   Library,
@@ -18,20 +18,27 @@ import {
   ChevronRight,
   CheckSquare,
   Square,
-  Layers,
-  Filter,
-  ToggleLeft,
-  ToggleRight,
-  Sparkles
+  Sparkles,
+  Radar,
+  Check,
+  LoaderCircle
 } from 'lucide-vue-next'
 import { api, id, message, date } from '../api'
 import type { User, Source, Audit, SearchResult } from '../types'
 import { usernamePattern, usernameError, passwordError } from '../validation'
 
+interface DeadSourceItem {
+  id: string
+  name: string
+  url: string
+  reason: string
+}
+
 const props = defineProps<{ currentUser: User; sourcesOnly?: boolean }>()
 const tab = ref(props.sourcesOnly ? 'sources' : 'overview')
 const loading = ref(false)
 const busy = ref(false)
+const probing = ref(false)
 const error = ref('')
 const notice = ref('')
 const overview = ref<{ users: number; books: number; sources: number; version: string } | null>(null)
@@ -39,12 +46,13 @@ const users = ref<User[]>([])
 const sources = ref<Source[]>([])
 const audit = ref<Audit[]>([])
 
-// 操作日志的分页状态
+// 操作日志的分页状态（保持每页 5 条）
 const auditPage = ref(1)
 const auditPageSize = ref(5)
 const auditTotal = ref(0)
 const auditTotalPages = ref(1)
-// 书源管理的分页、过滤与批量管理状态
+
+// 书源管理的分页、过滤与批量管理状态（保持每页 5 条）
 const sourcePage = ref(1)
 const sourcePageSize = ref(5)
 const sourceTotal = ref(0)
@@ -54,6 +62,10 @@ const sourceQuery = ref('')
 const sourceEnabledFilter = ref('all')
 const sourceGroups = ref<string[]>([])
 const selectedSourceIds = ref<string[]>([])
+
+// 探测清理失效书源结果状态
+const probedAliveIds = ref<Set<string>>(new Set())
+const cleanedDeadList = ref<DeadSourceItem[]>([])
 
 const createOpen = ref(false)
 const newUser = reactive({ username: '', password: '', role: 'user' })
@@ -98,7 +110,6 @@ async function load() {
 
 async function loadSources() {
   try {
-    // 异步拉取书源分组
     api<string[]>('/sources/groups').then(res => {
       sourceGroups.value = res || []
     }).catch(() => {})
@@ -163,7 +174,7 @@ function handleAuditSizeChange() {
 }
 
 async function deduplicateSources() {
-  if (!confirm('确定执行智能书源去重吗？系统将自动清理 URL 规范化后重复以及同名冗余的历史书源，并保留最新版本。')) return
+  if (!confirm('确定执行智能书源去重吗？系统将自动清理你名下 URL 规范化后重复以及同名冗余的书源，并保留最新版本。')) return
   await action(async () => {
     const res = await api<{ cleaned?: number; remaining?: number; removed?: number; retained?: number; total?: number }>('/sources/deduplicate', 'POST')
     const removed = res.cleaned ?? res.removed ?? 0
@@ -174,6 +185,56 @@ async function deduplicateSources() {
     notice.value = `智能去重完成：已自动清理 ${removed} 个重复书源，当前保留 ${retained} 个唯一有效书源（扫描前共 ${total} 个）。`
   }, '')
 }
+
+async function probeAndCleanSources() {
+  const scopeDesc = selectedSourceIds.value.length > 0
+    ? `已勾选的 ${selectedSourceIds.value.length} 个书源`
+    : `你名下的全部书源`
+  if (!confirm(`确定开始探测并清理失效书源吗？\n\n系统将并发检测${scopeDesc}，仅清理真正无法访问（域名注销、拒绝连接、超时死链、HTTP 404/5xx）的死源，正常可用的书源将完整保留。`)) {
+    return
+  }
+  if (busy.value || probing.value) return
+  probing.value = true
+  busy.value = true
+  error.value = ''
+  notice.value = ''
+  cleanedDeadList.value = []
+  try {
+    const payload = selectedSourceIds.value.length > 0
+      ? { autoDelete: true, ids: selectedSourceIds.value }
+      : { autoDelete: true }
+    const res = await api<{
+      probed: number
+      alive: number
+      aliveIds?: string[]
+      dead: number
+      removed: number
+      retained: number
+      deadSources?: DeadSourceItem[]
+    }>('/sources/probe', 'POST', payload)
+
+    if (res.aliveIds) {
+      const nextSet = new Set(probedAliveIds.value)
+      for (const aid of res.aliveIds) nextSet.add(aid)
+      probedAliveIds.value = nextSet
+    }
+    cleanedDeadList.value = res.deadSources || []
+    selectedSourceIds.value = []
+    sourcePage.value = 1
+    await loadSources()
+    if (res.removed > 0) {
+      notice.value = `探测清理完成：共检测 ${res.probed} 个书源，连通正常 ${res.alive} 个，已自动清理 ${res.removed} 个真正无法访问的失效书源。`
+    } else {
+      notice.value = `探测完成：共检测 ${res.probed} 个书源，全部连通正常，未发现失效死源！`
+    }
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    probing.value = false
+    busy.value = false
+  }
+}
+
 function switchTab(value: string) {
   if (busy.value) return
   tab.value = value
@@ -316,7 +377,7 @@ async function toggleSource(source: Source) {
 }
 
 async function deleteSource(source: Source) {
-  if (!confirm(`确定删除书源“${source.name}”吗？`)) return
+  if (!confirm(`确定删除你的个人书源“${source.name}”吗？`)) return
   await action(async () => {
     await api(`/sources/${id(source.id)}`, 'DELETE')
     if (sources.value.length === 1 && sourcePage.value > 1) {
@@ -385,7 +446,7 @@ async function exportSources() {
     a.download = `readergo-sources-${payload.length}.json`
     a.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
-  }, '书源 JSON 已导出，请妥善保管规则。')
+  }, '个人书源 JSON 已导出。')
 }
 
 async function checkSource() {
@@ -394,7 +455,7 @@ async function checkSource() {
       (await api<SearchResult[]>(`/sources/${id(checkId.value)}/check`, 'POST', {
         keyword: checkKeyword.value
       })) || []
-  }, '检查请求已完成。无结果并不代表书源一定失效。')
+  }, '检查请求已完成。')
 }
 
 onMounted(load)
@@ -404,18 +465,19 @@ onMounted(load)
   <header class="page-header">
     <div>
       <span class="eyebrow">{{ props.sourcesOnly ? 'PERSONAL BOOK SOURCES' : 'A WELL-KEPT READING ROOM' }}</span>
-      <h1>{{ props.sourcesOnly ? '我的书源' : '管理控制台' }}</h1>
-      <p>{{ props.sourcesOnly ? '独立维护属于你自己的书源规则，不同账号之间互不干扰。' : '照料好这个空间，让每一次阅读都安心。' }}</p>
+      <h1>{{ props.sourcesOnly ? '书源管理 · 我的书源' : '管理控制台' }}</h1>
+      <p>{{ props.sourcesOnly ? '每个账号独立维护与控制自己的书源，管理员不统一分配。支持探测并一键清理失效死源。' : '管理阅读空间账号与安全审计。书源由各用户在「书源管理」中自主维护。' }}</p>
     </div>
     <span v-if="!props.sourcesOnly" class="admin-badge"><ShieldCheck :size="16" />管理员专属</span>
+    <span v-else class="tag"><Globe2 :size="15" />{{ props.currentUser.username }} 的独立书源库</span>
   </header>
 
+  <!-- 管理员控制台仅包含平台级用户与审计，不再统一控制书源 -->
   <div v-if="!props.sourcesOnly" class="admin-tabs" aria-label="管理分区">
     <button
       v-for="item in [
         { id: 'overview', label: '空间概览', icon: Activity },
         { id: 'users', label: '用户管理', icon: Users },
-        { id: 'sources', label: '我的书源', icon: Globe2 },
         { id: 'audit', label: '操作日志', icon: FileJson }
       ]"
       :key="item.id"
@@ -434,10 +496,10 @@ onMounted(load)
     <button class="text-button" :disabled="busy" @click="load">刷新数据</button>
   </div>
   <div v-if="notice" class="success" role="status">{{ notice }}</div>
-  <div v-if="loading && tab !== 'sources'" class="empty" role="status">正在读取管理数据…</div>
+  <div v-if="loading && tab !== 'sources'" class="empty" role="status">正在读取数据…</div>
 
   <template v-else>
-    <!-- 空间概览 -->
+    <!-- 空间概览（仅管理员控制台） -->
     <section v-if="tab === 'overview'">
       <div v-if="overview" class="stats-grid">
         <article class="panel stat">
@@ -451,16 +513,16 @@ onMounted(load)
           <small>所有用户的藏书</small>
         </article>
         <article class="panel stat">
-          <span><Globe2 />接入书源</span>
-          <strong>{{ overview.sources }}</strong>
-          <small>已导入的书源配置</small>
+          <span><ShieldCheck />书源模式</span>
+          <strong style="font-size: 28px;">个人自治</strong>
+          <small>每位用户独立导入与控制自己的书源</small>
         </article>
       </div>
       <section v-if="overview" class="panel system-card">
         <span class="round-icon"><ShieldCheck :size="26" /></span>
         <div>
           <h2>简单、私密、有序</h2>
-          <p>账号由管理员创建；书源由每位用户各自导入与独立使用，互不干扰。请留意操作日志。</p>
+          <p>账号由管理员创建；书源由每位用户在导航栏「书源管理」中自行导入、探测与控制，互不干扰。</p>
           <span class="tag">ReaderGo · {{ overview.version }}</span>
         </div>
       </section>
@@ -470,10 +532,10 @@ onMounted(load)
           <strong>管理阅读账号</strong>
           <span>创建账号、调整角色与重置密码</span>
         </button>
-        <button @click="switchTab('sources')">
-          <Globe2 :size="21" />
-          <strong>维护书源</strong>
-          <span>导入规则、分页管理与批量治理</span>
+        <button @click="switchTab('audit')">
+          <Activity :size="21" />
+          <strong>查看操作日志</strong>
+          <span>回溯空间管理与安全审计流水</span>
         </button>
       </div>
     </section>
@@ -606,15 +668,25 @@ onMounted(load)
       <div v-if="!users.length" class="empty">暂无用户数据。</div>
     </section>
 
-    <!-- 书源管理（现代化分页 + 过滤 + 批量操作） -->
+    <!-- 个人书源管理（每位用户各自控制、支持探测清理失效源） -->
     <section v-if="tab === 'sources'">
       <div class="section-heading">
         <div>
-          <h2>书源管理 <span class="count">{{ sourceTotal }}</span></h2>
-          <small class="muted">已接入书源支持按分组筛选、全局去重覆盖与分页呈现</small>
+          <h2>我的书源列表 <span class="count">{{ sourceTotal }}</span></h2>
+          <small class="muted">书源归当前账号独享控制，支持探测清理失效死源、去重与分页管理</small>
         </div>
         <div class="actions">
-          <button class="secondary" :disabled="busy" @click="deduplicateSources" title="自动规范化 URL 并清理同域名/同名冗余书源">
+          <button
+            class="secondary"
+            :disabled="busy || !sourceTotal"
+            title="并发探测书源连通性，自动清理域名失效、拒绝连接或超时无响应的死源"
+            @click="probeAndCleanSources"
+          >
+            <LoaderCircle v-if="probing" class="spin" :size="16" />
+            <Radar v-else :size="16" />
+            {{ probing ? '正在探测清理…' : '清理失效书源' }}
+          </button>
+          <button class="secondary" :disabled="busy || !sourceTotal" @click="deduplicateSources" title="自动规范化 URL 并清理同域名/同名冗余书源">
             <Sparkles :size="16" />智能去重
           </button>
           <button :disabled="busy || !sources.length" @click="exportSources">
@@ -623,6 +695,26 @@ onMounted(load)
           <button class="primary" :disabled="busy" @click="importOpen = !importOpen">
             <Plus :size="17" />导入书源
           </button>
+        </div>
+      </div>
+
+      <!-- 探测清理结果明细反馈卡片 -->
+      <div v-if="cleanedDeadList.length > 0" class="panel dead-sources-report">
+        <div class="section-heading" style="margin-bottom: 12px;">
+          <div>
+            <h3>已自动清理 {{ cleanedDeadList.length }} 个无法探测的失效书源</h3>
+            <small class="muted">以下书源因域名注销、拒绝连接、超时无响应或站点损坏已被清理</small>
+          </div>
+          <button type="button" class="icon-button" aria-label="关闭清理报告" @click="cleanedDeadList = []">
+            <X :size="16" />
+          </button>
+        </div>
+        <div class="dead-sources-grid">
+          <div v-for="item in cleanedDeadList" :key="item.id" class="dead-source-chip">
+            <strong>{{ item.name }}</strong>
+            <span class="dead-reason-tag">{{ item.reason }}</span>
+            <small class="muted">{{ item.url }}</small>
+          </div>
         </div>
       </div>
 
@@ -679,7 +771,7 @@ onMounted(load)
       <!-- 导入书源面板 -->
       <div v-if="importOpen" class="panel admin-form">
         <div class="section-heading">
-          <h3>导入书源 JSON (自动规范化 URL 并去重)</h3>
+          <h3>导入个人书源 JSON (自动规范化 URL 并去重)</h3>
           <button class="icon-button" :disabled="busy" @click="importOpen = false" aria-label="关闭导入">
             <X :size="18" />
           </button>
@@ -691,7 +783,7 @@ onMounted(load)
           </label>
           <button :disabled="busy || !remoteUrl">获取预览</button>
         </form>
-        <p class="fine-print">远程地址只获取预览，不自动导入。服务器已配置 URL 规范化与重复自动识别机制。</p>
+        <p class="fine-print">远程地址只获取预览，不自动导入。导入后的书源仅归你当前账号独立使用。</p>
         <label class="file-label">
           <Upload :size="16" />从 JSON 文件读取
           <input type="file" accept=".json,application/json" :disabled="busy" @change="readFile" />
@@ -712,7 +804,7 @@ onMounted(load)
             <input v-model="overwrite" type="checkbox" />覆盖已存在的同源配置（若不勾选则自动去重跳过重复项）
           </label>
           <button class="primary" :disabled="busy || !raw.trim()">
-            {{ busy ? '处理中…' : '确认导入' }}
+            {{ busy ? '处理中…' : '确认导入到我的书源' }}
           </button>
         </form>
       </div>
@@ -765,7 +857,7 @@ onMounted(load)
           </div>
         </form>
         <div v-if="checkResults">
-          <p>返回 {{ checkResults.length }} 条结果。</p>
+          <p style="margin-top: 12px;">返回 {{ checkResults.length }} 条结果。</p>
           <ul class="check-results">
             <li v-for="r in checkResults" :key="r.url">
               <strong>{{ r.title }}</strong>
@@ -776,7 +868,7 @@ onMounted(load)
         </div>
       </div>
 
-      <!-- 书源卡片列表 -->
+      <!-- 书源卡片列表（新增个人自主控制与连通状态列） -->
       <div class="source-list" v-if="sources.length">
         <article
           v-for="source in sources"
@@ -796,10 +888,21 @@ onMounted(load)
               {{ source.name }}
               <span class="tag" v-if="source.group">{{ source.group }}</span>
             </h3>
-            <p>{{ source.url || '未提供网址' }}</p>
+            <p class="source-url-line">{{ source.url || '未提供网址' }}</p>
             <small>更新于 {{ date(source.updatedAt) }}</small>
           </div>
-          <div class="actions">
+
+          <!-- 新增：个人自主控制与状态列 -->
+          <div class="source-control-col" aria-label="书源归属与连通状态">
+            <span class="ownership-pill">
+              个人书源 · 自主控制
+            </span>
+            <span v-if="probedAliveIds.has(source.id)" class="probe-alive-pill">
+              <Check :size="12" /> 探测连通正常
+            </span>
+          </div>
+
+          <div class="actions source-row-actions">
             <button
               :class="['status-toggle', { enabled: source.enabled }]"
               :aria-pressed="source.enabled"
@@ -810,7 +913,7 @@ onMounted(load)
             </button>
             <button :disabled="busy" @click="edit(source)">编辑规则</button>
             <button :disabled="busy" @click="checkId = source.id; checkResults = null; checkKeyword = ''">
-              检查
+              测试
             </button>
             <button
               class="icon-button danger"
@@ -827,7 +930,7 @@ onMounted(load)
       <!-- 分页栏组件 -->
       <div class="pagination-bar" v-if="sourceTotal > 0">
         <div class="pagination-info">
-          <span>第 {{ sourcePage }} / {{ sourceTotalPages }} 页 (共 {{ sourceTotal }} 个书源)</span>
+          <span>第 {{ sourcePage }} / {{ sourceTotalPages }} 页 (共 {{ sourceTotal }} 个个人书源)</span>
           <select v-model="sourcePageSize" @change="handleFilterChange" aria-label="书源每页条数" class="page-size-select">
             <option :value="3">3 条/页</option>
             <option :value="5">5 条/页</option>
@@ -856,17 +959,17 @@ onMounted(load)
 
       <section v-if="!sources.length && !loading" class="empty">
         <Globe2 :size="36" />
-        <h2>未找到符合条件的书源</h2>
+        <h2>还没有属于你的书源</h2>
         <p v-if="sourceQuery || sourceGroup || sourceEnabledFilter !== 'all'">
           尝试清除筛选条件或重置搜索词。
         </p>
-        <p v-else>导入合法的书源 JSON，检查可用性后再启用。</p>
+        <p v-else>书源现已由每位用户各自管理，导入你信任的 Legado 书源 JSON 即可开始搜书。</p>
         <div class="actions">
           <button v-if="sourceQuery || sourceGroup || sourceEnabledFilter !== 'all'" class="secondary" @click="sourceQuery = ''; sourceGroup = ''; sourceEnabledFilter = 'all'; handleFilterChange()">
             重置筛选
           </button>
           <button class="primary" @click="importOpen = true">
-            <Plus :size="17" />导入首个书源
+            <Plus :size="17" />导入我的书源
           </button>
         </div>
       </section>

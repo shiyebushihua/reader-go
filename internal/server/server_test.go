@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"readergo/internal/engine"
 	"regexp"
 	"testing"
 	"time"
@@ -215,5 +216,20 @@ func TestUserScopedSources(t *testing.T) {
 	assertStatus(t, request(s, "DELETE", "/api/v1/sources/other-user-source", "", true, true), 404)
 	if e := m.ExpectationsWereMet(); e != nil {
 		t.Fatal(e)
+	}
+}
+func TestSearchRelevanceFilterAndRanking(t *testing.T) {
+	raw := []engine.Result{
+		{SourceID: "s1", Title: "毫不相干的凑数书", Author: "路人甲", URL: "https://example.com/1"},
+		{SourceID: "s2", Title: "凡人修仙传之仙界篇", Author: "忘语", URL: "https://example.com/2"},
+		{SourceID: "s3", Title: "《凡人修仙传》", Author: "忘语", URL: "https://example.com/3"},
+		{SourceID: "s4", Title: "修真杂谈", Author: "凡人修仙传粉丝", URL: "https://example.com/4"},
+	}
+	ranked := filterAndRankResults(raw, "凡人修仙传")
+	if len(ranked) != 3 {
+		t.Fatalf("expected 3 relevant results, got %d: %+v", len(ranked), ranked)
+	}
+	if ranked[0].URL != "https://example.com/3" || ranked[1].URL != "https://example.com/2" || ranked[2].URL != "https://example.com/4" {
+		t.Fatalf("unexpected ranking order: %+v", ranked)
 	}
 }
