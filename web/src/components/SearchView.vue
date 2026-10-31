@@ -441,14 +441,22 @@ async function search() {
 }
 
 async function add(result: SearchResult) {
-  adding.value = key(result)
+  const k = key(result)
+  adding.value = k
   error.value = ''
+  const slowTimer = setTimeout(() => {
+    if (adding.value === k) {
+      error.value = '正在解析书籍目录与章节，该书源响应较慢，请稍候…'
+    }
+  }, 10000)
   try {
     const book = await api<Book>('/books/online', 'POST', result)
-    added.value[key(result)] = book.id
+    added.value[k] = book.id
+    if (error.value.includes('正在解析')) error.value = ''
   } catch (e) {
     error.value = message(e)
   } finally {
+    clearTimeout(slowTimer)
     adding.value = ''
   }
 }
@@ -461,13 +469,20 @@ async function readNow(result: SearchResult) {
   }
   readingKey.value = k
   error.value = ''
+  const slowTimer = setTimeout(() => {
+    if (readingKey.value === k) {
+      error.value = '正在解析书籍目录并准备正文，该书源响应较慢，请稍候…'
+    }
+  }, 10000)
   try {
     const book = await api<Book>('/books/online', 'POST', result)
     added.value[k] = book.id
+    if (error.value.includes('正在解析')) error.value = ''
     location.hash = `/read/${id(book.id)}`
   } catch (e) {
     error.value = message(e)
   } finally {
+    clearTimeout(slowTimer)
     readingKey.value = ''
   }
 }

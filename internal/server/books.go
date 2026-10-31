@@ -274,7 +274,7 @@ type chapterRecord struct {
 }
 
 func batchInsertChapterRecords(ctx context.Context, tx *sql.Tx, bookID string, records []chapterRecord) error {
-	const batchSize = 100
+	const batchSize = 500
 	for i := 0; i < len(records); i += batchSize {
 		if err := ctx.Err(); err != nil {
 			return err
