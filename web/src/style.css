@@ -4074,6 +4074,10 @@ tr:last-child td {
 }
 
 .scope-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   min-height: 34px;
   padding: 6px 14px;
   border-radius: var(--radius-full);
@@ -4096,6 +4100,12 @@ tr:last-child td {
   border-color: var(--accent);
   color: #ffffff;
   font-weight: 600;
+}
+
+.scope-btn-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  vertical-align: middle;
 }
 
 .scope-group-select {
@@ -5223,5 +5233,149 @@ tr:last-child td {
     min-height: 38px;
     padding: 8px 12px;
     font-size: 13px;
+  }
+}
+
+/* ==========================================================================
+   ConfirmModal & UI-UX Pro Max Dialog / Search Refinements
+   ========================================================================== */
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(18, 14, 10, 0.45);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.confirm-card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.confirm-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.confirm-icon {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.confirm-icon.icon-danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.confirm-icon.icon-info {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.confirm-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.confirm-title {
+  margin: 0 0 6px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.35;
+}
+
+.confirm-message {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.55;
+  white-space: pre-line;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.confirm-actions .button {
+  min-height: 42px;
+  padding: 0 18px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.confirm-btn-cancel {
+  background: var(--surface-hover);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.danger-button {
+  background: var(--danger);
+  color: #fff;
+  border: 1px solid var(--danger);
+}
+
+.danger-button:hover {
+  background: #962828;
+  border-color: #962828;
+}
+
+.result-latest-chapter {
+  margin: 4px 0 6px;
+  font-size: 13px;
+  color: var(--accent);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.latest-chapter-label {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  background: var(--accent-light);
+  margin-right: 4px;
+}
+
+@media (max-width: 480px) {
+  .confirm-card {
+    padding: 18px;
+    gap: 16px;
+  }
+  .confirm-actions {
+    flex-direction: column-reverse;
+    gap: 8px;
+  }
+  .confirm-actions .button {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
   }
 }

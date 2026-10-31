@@ -16,6 +16,7 @@ import {
 } from 'lucide-vue-next'
 import { api, id, message } from '../api'
 import { removeBookCache } from '../offline'
+import { showConfirm } from '../confirm'
 import type { Book } from '../types'
 import BookCover from './BookCover.vue'
 
@@ -120,7 +121,14 @@ function openReaderDirect(bookId: string) {
 
 async function removeBook(book: Book) {
   if (removingId.value) return
-  if (!confirm(`确定从书架移除《${book.title}》吗？阅读进度、书签和本地文件也会被删除，此操作无法撤销。`)) return
+  const ok = await showConfirm({
+    title: '移除书籍',
+    message: `确定从书架移除《${book.title}》吗？阅读进度、书签和本地文件也会被删除，此操作无法撤销。`,
+    confirmText: '确认移除',
+    cancelText: '取消',
+    danger: true
+  })
+  if (!ok) return
   removingId.value = book.id
   error.value = ''
   notice.value = ''
@@ -151,9 +159,9 @@ onMounted(() => {
 <template>
   <header :class="['page-header', importMode ? 'import-header' : 'shelf-header']">
     <div>
-      <span class="eyebrow">{{ importMode ? 'BRING YOUR OWN STORIES' : 'THE PERSONAL COLLECTION' }}</span>
-      <h1>{{ importMode ? '让好书，住进书架' : '我的书架' }}<span v-if="!importMode && !loading" class="count">{{ books.length }}</span></h1>
-      <p>{{ importMode ? '从你的设备导入 TXT 或 EPUB 电子书，随时随地接着读。' : '收藏每一次心动，续上每一段故事。' }}</p>
+      <span class="eyebrow">{{ importMode ? 'IMPORT' : 'SHELF' }}</span>
+      <h1>{{ importMode ? '导入书籍' : '我的书架' }}<span v-if="!importMode && !loading" class="count">{{ books.length }}</span></h1>
+      <p>{{ importMode ? '从设备导入 TXT 或 EPUB 电子书，即刻加入书架阅读。' : '管理与阅读你的本地与网络藏书。' }}</p>
     </div>
     <a v-if="!importMode" class="button primary" href="#/import"><Plus :size="18" />导入书籍</a>
   </header>
@@ -170,7 +178,7 @@ onMounted(() => {
       <form class="panel import-panel" @submit.prevent="upload">
         <div :class="['dropzone', { dragging, 'has-file': !!file }]" @dragover.prevent="dragging = true" @dragleave.prevent="dragging = false" @drop.prevent="dropped">
           <span class="round-icon"><Upload :size="26" /></span>
-          <h2>{{ file ? file.name : '把下一本好书带进来' }}</h2>
+          <h2>{{ file ? file.name : '选择或拖放电子书' }}</h2>
           <p>{{ file ? `${(file.size / 1024 / 1024).toFixed(2)} MB · 已准备好导入` : '拖放 TXT / EPUB 文件到这里，或点击下方按钮从设备中选择' }}</p>
           <label class="button secondary file-picker">
             <FileText :size="16" />
@@ -188,8 +196,8 @@ onMounted(() => {
 
       <aside class="panel import-notes">
         <div class="import-notes-head">
-          <span class="eyebrow">READ YOUR WAY</span>
-          <h2>熟悉的文字，舒适的新居。</h2>
+          <span class="eyebrow">FORMATS</span>
+          <h2>支持格式说明</h2>
         </div>
         <div class="import-note-list">
           <div class="import-note-card">
@@ -214,7 +222,7 @@ onMounted(() => {
     <div v-if="imported" class="success import-success" role="status">
       <div>
         <strong>《{{ imported.title }}》已加入书架</strong>
-        <p>共 {{ imported.chapterCount }} 章，新的故事等你翻开。</p>
+        <p>共 {{ imported.chapterCount }} 章，已成功入架。</p>
       </div>
       <div class="actions">
         <a class="button primary" :href="`#/read/${id(imported.id)}`"><BookOpen :size="18" />立即阅读</a>
@@ -226,13 +234,13 @@ onMounted(() => {
   <template v-else>
     <section v-if="continuing && !loading" class="continue-card">
       <div>
-        <span class="eyebrow continue-desktop-label">PICK UP WHERE YOU LEFT OFF</span><span class="continue-mobile-label">接着读</span>
+        <span class="eyebrow continue-desktop-label">CONTINUE READING</span><span class="continue-mobile-label">接着读</span>
         <h2>{{ continuing.title }}</h2>
         <p>{{ continuing.author || '佚名' }}<span class="dot">·</span>本章已读 {{ Math.round((continuing.progress?.position || 0) * 100) }}%</p>
         <a class="button primary continue-action" :href="`#/read/${id(continuing.id)}`"><BookOpen :size="18" />继续阅读</a>
       </div>
       <div class="continue-decoration" aria-hidden="true">
-        <span>再翻一页</span>
+        <span>继续阅读</span>
         <BookOpen :size="110" :stroke-width="0.7" />
       </div>
     </section>
@@ -266,12 +274,12 @@ onMounted(() => {
 
     <section v-else-if="!books.length && !error" class="empty shelf-empty">
       <span class="round-icon"><Library :size="32" /></span>
-      <span class="eyebrow">A NEW CHAPTER STARTS HERE</span>
-      <h2>书架留白，故事待续</h2>
-      <p>导入一本珍藏的电子书，或去发现你的下一本好书。<br>每一次阅读，都从翻开第一页开始。</p>
+      <span class="eyebrow">EMPTY</span>
+      <h2>书架暂无书籍</h2>
+      <p>导入本地 TXT/EPUB 电子书，或通过搜索添加网络小说开始阅读。</p>
       <div class="actions">
-        <a class="button primary" href="#/import"><Plus :size="18" />导入第一本书</a>
-        <a class="button secondary" href="#/search">发现好书<ArrowUpRight :size="17" /></a>
+        <a class="button primary" href="#/import"><Plus :size="18" />导入书籍</a>
+        <a class="button secondary" href="#/search">搜索书籍<ArrowUpRight :size="17" /></a>
       </div>
     </section>
 
@@ -362,7 +370,7 @@ onMounted(() => {
       </div>
 
       <footer class="shelf-footer">
-        {{ filtered.length }} 本藏书 <span>·</span> 把时间留给值得的文字
+        共 {{ filtered.length }} 本藏书
       </footer>
     </template>
   </template>

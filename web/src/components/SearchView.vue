@@ -50,7 +50,7 @@ const sourceFilter = ref<'hasBooks' | 'searching' | 'all'>('hasBooks')
 
 // 搜索范围折叠卡片与超时控制
 const scopeExpanded = ref(false)
-const timeoutSeconds = ref(15)
+const timeoutSeconds = ref(0)
 const activePreset = ref<'all' | 'top20' | 'top50' | 'group' | 'custom'>('all')
 const selectedGroup = ref('')
 const showPickerModal = ref(false)
@@ -487,9 +487,9 @@ onUnmounted(() => {
 <template>
   <header class="page-header search-page-header">
     <div>
-      <span class="eyebrow">FIND YOUR NEXT CHAPTER</span>
-      <h1>发现好书</h1>
-      <p>输入准确书名或作者，在你的个人书源中智能匹配最佳结果。</p>
+      <span class="eyebrow">SEARCH NOVELS</span>
+      <h1>搜索</h1>
+      <p>输入书名或作者，在你的个人书源中检索书籍。</p>
     </div>
     <Globe2 class="header-symbol" :size="38" :stroke-width="1.2" />
   </header>
@@ -533,7 +533,7 @@ onUnmounted(() => {
         class="primary search-main-btn"
         :disabled="loading || !selected.length || !keyword.trim()"
       >
-        <span>搜索好书</span>
+        <span>搜索</span>
         <ArrowRight :size="18" />
       </button>
     </div>
@@ -553,7 +553,7 @@ onUnmounted(() => {
             {{ scopePresetLabel }} · {{ selected.length }}/{{ enabled.length }} 源
           </span>
           <span class="scope-summary-pill muted-pill">
-            <Clock :size="12" /> 超时 {{ timeoutSeconds }}s
+            <Clock :size="12" /> {{ timeoutSeconds === 0 ? '不限超时 · 完整等待' : `超时 ${timeoutSeconds}s` }}
           </span>
         </div>
         <div class="scope-header-right">
@@ -573,7 +573,7 @@ onUnmounted(() => {
               :disabled="searching || !enabled.length"
               @click="applyPreset('all')"
             >
-              🚀 全部可用 ({{ enabled.length }})
+              <Globe2 :size="13" class="scope-btn-icon" /> 全部可用 ({{ enabled.length }})
             </button>
             <button
               type="button"
@@ -581,7 +581,7 @@ onUnmounted(() => {
               :disabled="searching || !enabled.length"
               @click="applyPreset('top20')"
             >
-              ⚡ 前 20 源
+              <Zap :size="13" class="scope-btn-icon" /> 前 20 源
             </button>
             <button
               type="button"
@@ -589,7 +589,7 @@ onUnmounted(() => {
               :disabled="searching || !enabled.length"
               @click="applyPreset('top50')"
             >
-              🌐 前 50 源
+              <Radio :size="13" class="scope-btn-icon" /> 前 50 源
             </button>
 
             <select
@@ -600,7 +600,7 @@ onUnmounted(() => {
               aria-label="按书源分组筛选"
               @change="onGroupSelectChange"
             >
-              <option value="">📂 按分组筛选…</option>
+              <option value="">按分组筛选…</option>
               <option v-for="g in sourceGroups" :key="g" :value="g">
                 {{ g }} ({{ enabled.filter(s => s.group === g).length }})
               </option>
@@ -626,7 +626,7 @@ onUnmounted(() => {
           <div class="source-scope-presets">
             <button
               v-for="opt in [
-                { val: 10, label: '10秒 · 极速' },
+                { val: 0, label: '0秒 · 完整等待' },
                 { val: 15, label: '15秒 · 推荐' },
                 { val: 25, label: '25秒 · 慢源兼容' },
                 { val: 35, label: '35秒 · 深度等待' }
@@ -663,9 +663,9 @@ onUnmounted(() => {
         <Check v-else-if="!stopped" :size="18" class="hud-icon-success" />
         <AlertCircle v-else :size="18" class="hud-icon-warn" />
         <span v-if="searching">
-          正在精准匹配《<strong>{{ searchedKeyword }}</strong>》
+          正在检索《<strong>{{ searchedKeyword }}</strong>》
           <small class="muted">
-            · 已找到 <strong>{{ results.length }}</strong> 本相关书籍 ({{ completedSources }}/{{ totalSources }} 源 · {{ searchSeconds }}s)
+            · 已找到 <strong>{{ results.length }}</strong> 本书籍 ({{ completedSources }}/{{ totalSources }} 源 · {{ searchSeconds }}s)
           </small>
         </span>
         <span v-else-if="stopped">
@@ -772,7 +772,7 @@ onUnmounted(() => {
   <div v-if="searching && results.length === 0" class="search-skeleton-container">
     <div class="search-skeleton-tip">
       <Radio class="spin" :size="16" style="color: var(--accent);" />
-      <span>正在并发检索《{{ searchedKeyword }}》，自动过滤无关结果，精准好书即将呈现…</span>
+      <span>正在检索《{{ searchedKeyword }}》，请稍候…</span>
     </div>
     <div class="search-skeleton-grid">
       <div v-for="n in 4" :key="n" class="skeleton-card">
@@ -797,7 +797,7 @@ onUnmounted(() => {
         <h2>
           搜索结果 <span class="count">{{ results.length }}</span>
         </h2>
-        <span class="muted">按《{{ searchedKeyword }}》书名与作者相关度精准排序</span>
+        <span class="muted">按相关度排序</span>
       </div>
 
       <div class="result-pagination-ctrls">
@@ -832,7 +832,10 @@ onUnmounted(() => {
           </div>
           <h2>{{ result.title }}</h2>
           <p class="muted result-author">{{ result.author || '佚名' }}</p>
-          <p class="result-intro">{{ result.intro || '书源暂未提供简介。' }}</p>
+          <p v-if="result.latestChapter" class="result-latest-chapter">
+            <span class="latest-chapter-label">最新：</span>{{ result.latestChapter }}
+          </p>
+          <p class="result-intro">{{ result.intro || '暂无简介。' }}</p>
           <div class="result-card-action">
             <template v-if="added[key(result)]">
               <a
@@ -925,7 +928,7 @@ onUnmounted(() => {
   <section v-else-if="searched && !searching && !error" class="empty">
     <Search :size="32" />
     <h2>未找到与《{{ searchedKeyword }}》匹配的书籍</h2>
-    <p>系统已自动过滤无关结果。可尝试检查书名错别字、展开上方「搜索范围」调高单源超时（如 25 秒），或前往「我的书源」补充书源。</p>
+    <p>可尝试检查书名错别字，或前往「书源管理」添加更多可用书源。</p>
   </section>
 
   <!-- 自选书源分页挑选器弹窗 (Modal) -->

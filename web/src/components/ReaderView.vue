@@ -43,6 +43,7 @@ import {
   saveChapterContent,
   getChapterContent
 } from '../offline'
+import { showConfirm } from '../confirm'
 
 interface ExtendedReaderPrefs {
   theme: string
@@ -735,7 +736,15 @@ async function canLeave() {
   if (!dirty.value) return true
   const saved = await saveProgress()
   if (saved && dirty.value) return saveProgress()
-  if (!saved) return confirm('阅读进度尚未保存。确定放弃本次未保存的位置并离开吗？')
+  if (!saved) {
+    return await showConfirm({
+      title: '未保存的阅读进度',
+      message: '阅读进度尚未保存。确定放弃本次未保存的位置并离开吗？',
+      confirmText: '放弃离开',
+      cancelText: '留在本页',
+      danger: true
+    })
+  }
   return true
 }
 

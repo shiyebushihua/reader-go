@@ -16,6 +16,7 @@ import {
 } from 'lucide-vue-next'
 import { api, id, message } from '../api'
 import type { Book, Chapter, Source, SearchResult } from '../types'
+import { showConfirm } from '../confirm'
 import {
   saveBook,
   getBook,
@@ -223,7 +224,14 @@ async function refresh() {
 }
 
 async function remove() {
-  if (!confirm('确定从书架移除此书吗？阅读进度、书签和本地文件也会被删除，此操作无法撤销。')) return
+  const ok = await showConfirm({
+    title: '移除书籍',
+    message: '确定从书架移除此书吗？阅读进度、书签和本地文件也会被删除，此操作无法撤销。',
+    confirmText: '确认移除',
+    cancelText: '取消',
+    danger: true
+  })
+  if (!ok) return
   busy.value = true
   try {
     await api(path, 'DELETE')
@@ -330,7 +338,7 @@ onMounted(() => {
         <p class="muted">
           {{ book.author || '佚名' }}<span class="dot">·</span>{{ book.chapterCount }} 章<span class="dot">·</span>{{ book.kind.toUpperCase() }}
         </p>
-        <p class="book-intro">{{ book.intro || '暂无简介。故事的精彩，等你亲自翻开。' }}</p>
+        <p class="book-intro">{{ book.intro || '暂无简介。' }}</p>
         <div class="actions">
           <a v-if="chapters.length" class="button primary" :href="`#/read/${id(book.id)}`">
             <BookOpen :size="18" />{{ book.progress ? '继续阅读' : '开始阅读' }}<ArrowRight :size="17" />

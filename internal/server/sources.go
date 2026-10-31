@@ -585,8 +585,8 @@ func (s *Server) searchBooks(w http.ResponseWriter, r *http.Request) error {
 	default:
 		return fail(429, "BUSY", "搜索队列繁忙，请稍后再试")
 	}
-	perSourceTimeout := 15 * time.Second
-	if body.TimeoutSeconds >= 5 && body.TimeoutSeconds <= 60 {
+	perSourceTimeout := 120 * time.Second
+	if body.TimeoutSeconds > 0 && body.TimeoutSeconds <= 120 {
 		perSourceTimeout = time.Duration(body.TimeoutSeconds) * time.Second
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
@@ -663,8 +663,8 @@ func (s *Server) searchBooksStream(w http.ResponseWriter, r *http.Request) error
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	perSourceTimeout := 15 * time.Second
-	if body.TimeoutSeconds >= 5 && body.TimeoutSeconds <= 60 {
+	perSourceTimeout := 120 * time.Second
+	if body.TimeoutSeconds > 0 && body.TimeoutSeconds <= 120 {
 		perSourceTimeout = time.Duration(body.TimeoutSeconds) * time.Second
 	}
 

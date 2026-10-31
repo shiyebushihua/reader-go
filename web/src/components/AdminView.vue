@@ -25,6 +25,7 @@ import {
 } from 'lucide-vue-next'
 import { api, id, message, date } from '../api'
 import type { User, Source, Audit, SearchResult } from '../types'
+import { showConfirm } from '../confirm'
 import { usernamePattern, usernameError, passwordError } from '../validation'
 
 interface DeadSourceItem {
@@ -174,7 +175,14 @@ function handleAuditSizeChange() {
 }
 
 async function deduplicateSources() {
-  if (!confirm('确定执行智能书源去重吗？系统将自动清理你名下 URL 规范化后重复以及同名冗余的书源，并保留最新版本。')) return
+  const ok = await showConfirm({
+    title: '智能书源去重',
+    message: '确定执行智能书源去重吗？系统将自动清理你名下 URL 规范化后重复以及同名冗余的书源，并保留最新版本。',
+    confirmText: '开始去重',
+    cancelText: '取消',
+    danger: false
+  })
+  if (!ok) return
   await action(async () => {
     const res = await api<{ cleaned?: number; remaining?: number; removed?: number; retained?: number; total?: number }>('/sources/deduplicate', 'POST')
     const removed = res.cleaned ?? res.removed ?? 0
@@ -190,9 +198,14 @@ async function probeAndCleanSources() {
   const scopeDesc = selectedSourceIds.value.length > 0
     ? `已勾选的 ${selectedSourceIds.value.length} 个书源`
     : `你名下的全部书源`
-  if (!confirm(`确定开始探测并清理失效书源吗？\n\n系统将并发检测${scopeDesc}，仅清理真正无法访问（域名注销、拒绝连接、超时死链、HTTP 404/5xx）的死源，正常可用的书源将完整保留。`)) {
-    return
-  }
+  const ok = await showConfirm({
+    title: '失效书源探测与清理',
+    message: `确定开始探测并清理失效书源吗？\n\n系统将并发检测${scopeDesc}，仅清理真正无法访问（域名注销、拒绝连接、超时死链、HTTP 404/5xx）的死源，正常可用的书源将完整保留。`,
+    confirmText: '开始探测清理',
+    cancelText: '取消',
+    danger: true
+  })
+  if (!ok) return
   if (busy.value || probing.value) return
   probing.value = true
   busy.value = true
@@ -377,7 +390,14 @@ async function toggleSource(source: Source) {
 }
 
 async function deleteSource(source: Source) {
-  if (!confirm(`确定删除你的个人书源“${source.name}”吗？`)) return
+  const ok = await showConfirm({
+    title: '删除书源',
+    message: `确定删除你的个人书源“${source.name}”吗？此操作无法撤销。`,
+    confirmText: '确认删除',
+    cancelText: '取消',
+    danger: true
+  })
+  if (!ok) return
   await action(async () => {
     await api(`/sources/${id(source.id)}`, 'DELETE')
     if (sources.value.length === 1 && sourcePage.value > 1) {
@@ -390,8 +410,15 @@ async function deleteSource(source: Source) {
 async function batchAction(actionType: 'enable' | 'disable' | 'delete') {
   if (!selectedSourceIds.value.length) return
   const actionText = actionType === 'enable' ? '启用' : actionType === 'disable' ? '停用' : '删除'
-  if (actionType === 'delete' && !confirm(`确定要批量删除所选的 ${selectedSourceIds.value.length} 个书源吗？`)) {
-    return
+  if (actionType === 'delete') {
+    const ok = await showConfirm({
+      title: '批量删除书源',
+      message: `确定要批量删除所选的 ${selectedSourceIds.value.length} 个书源吗？此操作无法撤销。`,
+      confirmText: '确认批量删除',
+      cancelText: '取消',
+      danger: true
+    })
+    if (!ok) return
   }
   await action(async () => {
     const res = await api<{ affected: number }>('/sources/batch', 'POST', {

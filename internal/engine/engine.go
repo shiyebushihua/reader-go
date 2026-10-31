@@ -21,7 +21,8 @@ type Result struct {
 	Title    string `json:"title"`
 	Author   string `json:"author"`
 	Cover    string `json:"cover"`
-	Intro    string `json:"intro"`
+	Intro         string `json:"intro"`
+	LatestChapter string `json:"latestChapter,omitempty"`
 }
 type Chapter struct {
 	Title string
@@ -334,7 +335,7 @@ func (e *Engine) Search(ctx context.Context, s Source, keyword string) ([]Result
 		if err = ctx.Err(); err != nil {
 			return nil, err
 		}
-		f, er := fields(v, r.Search, "name", "author", "bookUrl", "coverUrl", "intro")
+		f, er := fields(v, r.Search, "name", "author", "bookUrl", "coverUrl", "intro", "lastChapter")
 		if er != nil {
 			return nil, er
 		}
@@ -356,7 +357,11 @@ func (e *Engine) Search(ctx context.Context, s Source, keyword string) ([]Result
 				return nil, er
 			}
 		}
-		out = append(out, Result{s.ID, bookURL, f[0], f[1], cover, f[4]})
+		latest := ""
+		if len(f) > 5 {
+			latest = strings.TrimSpace(f[5])
+		}
+		out = append(out, Result{SourceID: s.ID, URL: bookURL, Title: f[0], Author: f[1], Cover: cover, Intro: f[4], LatestChapter: latest})
 	}
 	return out, nil
 }

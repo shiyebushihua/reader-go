@@ -5,6 +5,6 @@ export interface Book { id:string; title:string; author:string; cover:string; in
 export interface Chapter { id:string; title:string; index:number }
 export interface ChapterContent { id:string; title:string; content:string; format:'text'|'html' }
 export interface Bookmark { id:string; chapterId:string; position:number; note:string }
-export interface SearchResult { sourceId:string; url:string; title:string; author:string; cover:string; intro:string }
+export interface SearchResult { sourceId:string; url:string; title:string; author:string; cover:string; intro:string; latestChapter?:string }
 export interface Settings { theme:string; fontSize:number; lineHeight:number; fontFamily:string; width:number }
 export interface Audit { id:string; actor:string; action:string; target:string; createdAt:string }
