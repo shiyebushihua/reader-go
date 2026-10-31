@@ -330,7 +330,7 @@ async function search() {
   const kw = keyword.value.trim()
   if (!kw || !selected.value.length) return
 
-  const targetIds = selected.value.slice(0, 100)
+  const targetIds = selected.value.slice(0, 1000)
 
   searching.value = true
   stopped.value = false

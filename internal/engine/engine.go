@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -145,11 +146,40 @@ func resolve(base, ref string) (string, error) {
 	}
 	return u.String(), nil
 }
+var unquotedKeyRegex = regexp.MustCompile(`(?m)([{,]\s*)([a-zA-Z_][a-zA-Z0-9_-]*)\s*:`)
+var trailingCommaRegex = regexp.MustCompile(`,\s*}`)
+
+func normalizeJSONOptions(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !strings.HasPrefix(raw, "{") {
+		return raw
+	}
+	if json.Valid([]byte(raw)) {
+		return raw
+	}
+	// Legado allows unquoted keys like {method:"post",body:"..."}
+	res := unquotedKeyRegex.ReplaceAllString(raw, `$1"$2":`)
+	res = trailingCommaRegex.ReplaceAllString(res, "}")
+	return res
+}
+
 func template(text, key string, page int, escaped bool) (string, error) {
 	if escaped {
 		key = url.QueryEscape(key)
 	}
-	text = strings.NewReplacer("{{key}}", key, "{{page}}", strconv.Itoa(page), "{key}", key, "{page}", strconv.Itoa(page)).Replace(text)
+	prevPage := strconv.Itoa(page - 1)
+	if page <= 1 {
+		prevPage = "1"
+	}
+	nextPage := strconv.Itoa(page + 1)
+	text = strings.NewReplacer(
+		"{{key}}", key,
+		"{{page}}", strconv.Itoa(page),
+		"{key}", key,
+		"{page}", strconv.Itoa(page),
+		"{{page-1}}", prevPage,
+		"{{page+1}}", nextPage,
+	).Replace(text)
 	if err := supported(text); err != nil {
 		return "", err
 	}
@@ -181,35 +211,48 @@ func makeRequest(r sourceRules, base, raw, key string, page int) (requestSpec, e
 		return spec, err
 	}
 	if options != "" {
+		normalized := normalizeJSONOptions(options)
 		var opts map[string]json.RawMessage
-		if err = json.Unmarshal([]byte(options), &opts); err != nil {
-			return spec, fmt.Errorf("invalid HTTP options: %w", err)
-		}
-		for k, v := range opts {
-			switch k {
-			case "method":
-				err = json.Unmarshal(v, &spec.Method)
-			case "charset":
-				err = json.Unmarshal(v, &spec.Charset)
-			case "headers", "header":
-				var h map[string]string
-				h, err = headers(v)
-				for k, val := range h {
-					spec.Headers[k] = val
-				}
-			case "body":
-				if len(v) > 0 && v[0] == '"' {
-					err = json.Unmarshal(v, &spec.Body)
-				} else {
-					spec.Body = string(v)
-				}
-			default:
-				return spec, fmt.Errorf("unsupported HTTP option %q", k)
+		if err = json.Unmarshal([]byte(normalized), &opts); err != nil {
+			// Fallback: extract method, charset, body via regex if relaxed unmarshal still fails
+			if m := regexp.MustCompile(`(?i)["']?method["']?\s*:\s*["']?([a-zA-Z]+)`).FindStringSubmatch(options); len(m) > 1 {
+				spec.Method = strings.ToUpper(m[1])
 			}
-			if err != nil {
-				return spec, err
+			if m := regexp.MustCompile(`(?i)["']?charset["']?\s*:\s*["']?([a-zA-Z0-9_-]+)`).FindStringSubmatch(options); len(m) > 1 {
+				spec.Charset = m[1]
+			}
+			if m := regexp.MustCompile(`(?i)["']?body["']?\s*:\s*("([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)')`).FindStringSubmatch(options); len(m) > 2 {
+				if m[2] != "" {
+					spec.Body = m[2]
+				} else if len(m) > 4 && m[4] != "" {
+					spec.Body = m[4]
+				}
+			}
+		} else {
+			for k, v := range opts {
+				switch strings.ToLower(k) {
+				case "method":
+					_ = json.Unmarshal(v, &spec.Method)
+				case "charset":
+					_ = json.Unmarshal(v, &spec.Charset)
+				case "headers", "header":
+					var h map[string]string
+					if h, err = headers(v); err == nil {
+						for hk, val := range h {
+							spec.Headers[hk] = val
+						}
+					}
+				case "body":
+					if len(v) > 0 && v[0] == '"' {
+						_ = json.Unmarshal(v, &spec.Body)
+					} else {
+						spec.Body = string(v)
+					}
+				default:
+					return spec, fmt.Errorf("unsupported HTTP option %q", k)
 			}
 		}
+	}
 		// Body strings use form escaping, matching conventional Legado search POST forms.
 		spec.Body, err = template(spec.Body, key, page, true)
 		if err != nil {
@@ -222,6 +265,11 @@ func makeRequest(r sourceRules, base, raw, key string, page int) (requestSpec, e
 			return spec, err
 		}
 		spec.Headers[k] = v
+	}
+	if spec.Method == "" {
+		spec.Method = "GET"
+	} else {
+		spec.Method = strings.ToUpper(spec.Method)
 	}
 	return spec, nil
 }

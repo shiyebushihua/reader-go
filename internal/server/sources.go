@@ -530,6 +530,9 @@ func filterAndRankResults(items []engine.Result, keyword string) []engine.Result
 }
 
 func (s *Server) resolveSearchSources(ctx context.Context, uid string, sourceIDs []string, maxLimit int) ([]Source, error) {
+	if maxLimit <= 0 || maxLimit > 1000 {
+		maxLimit = 1000
+	}
 	if len(sourceIDs) == 0 {
 		rows, err := s.db.QueryContext(ctx, "SELECT id,name,url,group_name,enabled,rule,updated_at FROM sources WHERE user_id=? AND enabled=TRUE ORDER BY name LIMIT ?", uid, maxLimit)
 		if err != nil {
@@ -573,7 +576,7 @@ func (s *Server) searchBooks(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	body.Keyword = strings.TrimSpace(body.Keyword)
-	if len(body.Keyword) == 0 || len(body.Keyword) > 200 || len(body.SourceIDs) > 200 {
+	if len(body.Keyword) == 0 || len(body.Keyword) > 200 || len(body.SourceIDs) > 1000 {
 		return fail(400, "SEARCH", "请输入有效搜索关键词")
 	}
 	select {
@@ -589,7 +592,7 @@ func (s *Server) searchBooks(w http.ResponseWriter, r *http.Request) error {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 	uid := current(r).ID
-	sources, err := s.resolveSearchSources(ctx, uid, body.SourceIDs, 100)
+	sources, err := s.resolveSearchSources(ctx, uid, body.SourceIDs, 1000)
 	if err != nil {
 		return err
 	}
@@ -646,7 +649,7 @@ func (s *Server) searchBooksStream(w http.ResponseWriter, r *http.Request) error
 		return e
 	}
 	body.Keyword = strings.TrimSpace(body.Keyword)
-	if len(body.Keyword) == 0 || len(body.Keyword) > 200 || len(body.SourceIDs) > 200 {
+	if len(body.Keyword) == 0 || len(body.Keyword) > 200 || len(body.SourceIDs) > 1000 {
 		return fail(400, "SEARCH", "请输入有效搜索关键词")
 	}
 	select {
@@ -669,7 +672,7 @@ func (s *Server) searchBooksStream(w http.ResponseWriter, r *http.Request) error
 	defer cancel()
 
 	uid := current(r).ID
-	sources, err := s.resolveSearchSources(ctx, uid, body.SourceIDs, 100)
+	sources, err := s.resolveSearchSources(ctx, uid, body.SourceIDs, 1000)
 	if err != nil {
 		return err
 	}
@@ -684,7 +687,7 @@ func (s *Server) searchBooksStream(w http.ResponseWriter, r *http.Request) error
 	var completedCount int
 	var totalFound int
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 16)
+	sem := make(chan struct{}, 24)
 
 	for _, src := range sources {
 		wg.Add(1)

@@ -246,7 +246,11 @@ func htmlSelect(root *goquery.Selection, rule string, scalar bool) (*goquery.Sel
 			if m[1] == "id" {
 				selector = "#" + selector
 			}
-			cur = cur.Find(selector)
+			sub := cur.Find(selector)
+			if sub.Length() == 0 && cur.Filter(selector).Length() > 0 {
+				sub = cur.Filter(selector)
+			}
+			cur = sub
 			if m[3] != "" {
 				i, _ := strconv.Atoi(m[3])
 				cur = cur.Eq(i)
@@ -259,7 +263,12 @@ func htmlSelect(root *goquery.Selection, rule string, scalar bool) (*goquery.Sel
 			if err != nil {
 				return nil, "", fmt.Errorf("invalid/unsupported CSS selector: %w", err)
 			}
-			cur = cur.FindMatcher(matcher)
+			sub := cur.FindMatcher(matcher)
+			if sub.Length() == 0 && cur.FilterMatcher(matcher).Length() > 0 {
+				cur = cur.FilterMatcher(matcher)
+			} else {
+				cur = sub
+			}
 		}
 	}
 	if attr == "" {

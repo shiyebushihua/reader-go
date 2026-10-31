@@ -169,6 +169,9 @@ func (e *Engine) fetch(ctx context.Context, spec requestSpec) (fetched, error) {
 		}
 		req.Header.Set(k, v)
 	}
+	if method == "POST" && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
 	client := e.client
 	if client == nil {
 		client = New().client

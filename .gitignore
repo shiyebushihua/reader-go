@@ -19,3 +19,9 @@ node_modules/
 /cmd/reader/static/*
 !/cmd/reader/static/.gitkeep
 .DS_Store
+1PANEL_DEPLOY.md
+Dockerfile.release
+Dockerfile.server
+run-local.bat
+start_service.ps1
+test_sources_sample.json
