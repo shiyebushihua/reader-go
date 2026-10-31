@@ -366,7 +366,7 @@ func (e *Engine) Search(ctx context.Context, s Source, keyword string) ([]Result
 	return out, nil
 }
 func (e *Engine) Details(ctx context.Context, s Source, rawURL string) (Detail, error) {
-	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 	var d Detail
 	r, err := parseSource(s)
@@ -422,8 +422,9 @@ func (e *Engine) Details(ctx context.Context, s Source, rawURL string) (Detail, 
 		if seenPages[base] {
 			break
 		}
-		if page >= 10 {
-			return d, fmt.Errorf("TOC pagination exceeds 10 pages")
+		const maxTocPages = 200
+		if page >= maxTocPages {
+			return d, fmt.Errorf("TOC pagination exceeds %d pages", maxTocPages)
 		}
 		seenPages[base] = true
 		list, er := elements(doc, r.Toc["chapterList"])
@@ -464,8 +465,8 @@ func (e *Engine) Details(ctx context.Context, s Source, rawURL string) (Detail, 
 		if seenPages[u] {
 			break
 		}
-		if page == 9 {
-			return d, fmt.Errorf("TOC pagination exceeds 10 pages")
+		if page >= maxTocPages-1 {
+			return d, fmt.Errorf("TOC pagination exceeds %d pages", maxTocPages)
 		}
 		doc, base, err = e.load(ctx, r, base, next)
 		if err != nil {

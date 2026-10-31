@@ -11,7 +11,7 @@ import ReaderView from './components/ReaderView.vue'
 import AdminView from './components/AdminView.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
 const user=ref<User|null>(null), starting=ref(true), setup=ref(false), startupError=ref(''), error=ref(''), notice=ref(''), busy=ref(false)
-const appVersion=ref('0.0.12'), adminUnlocked=ref(sessionStorage.getItem('reader_admin_unlocked')==='true')
+const appVersion=ref('0.0.13'), adminUnlocked=ref(sessionStorage.getItem('reader_admin_unlocked')==='true')
 let versionClicks: number[] = []
 function onVersionClick(e?: KeyboardEvent | MouseEvent){if(e && 'repeat' in e && (e as KeyboardEvent).repeat)return;const now=Date.now();versionClicks=versionClicks.filter(t=>now-t<2000);versionClicks.push(now);if(versionClicks.length>=5){versionClicks=[];if(user.value?.role==='admin'){adminUnlocked.value=true;sessionStorage.setItem('reader_admin_unlocked','true');notice.value='已解锁管理控制台权限'}else if(user.value){error.value='当前账号非管理员，无权开启管理控制台'}}}
 const username=ref(''), password=ref(''), setupToken=ref(''), currentPassword=ref(''), newPassword=ref(''), confirmPassword=ref('')
