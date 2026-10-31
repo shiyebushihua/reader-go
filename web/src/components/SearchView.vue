@@ -832,9 +832,13 @@ onUnmounted(() => {
           </div>
           <h2>{{ result.title }}</h2>
           <p class="muted result-author">{{ result.author || '佚名' }}</p>
-          <p v-if="result.latestChapter" class="result-latest-chapter">
-            <span class="latest-chapter-label">最新：</span>{{ result.latestChapter }}
-          </p>
+          <div v-if="result.latestChapter" class="result-latest-chapter" :title="`最新章节：${result.latestChapter}`">
+            <span class="latest-chapter-tag">
+              <Clock :size="12" class="latest-chapter-icon" />
+              最新
+            </span>
+            <span class="latest-chapter-title">{{ result.latestChapter }}</span>
+          </div>
           <p class="result-intro">{{ result.intro || '暂无简介。' }}</p>
           <div class="result-card-action">
             <template v-if="added[key(result)]">
