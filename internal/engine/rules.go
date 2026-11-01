@@ -15,6 +15,30 @@ import (
 type value struct {
 	node *goquery.Selection
 	data any
+	raw  string
+}
+
+func (v value) rawString() string {
+	if v.raw != "" {
+		return v.raw
+	}
+	if v.node != nil {
+		h, err := v.node.Html()
+		if err == nil && h != "" {
+			return h
+		}
+		if len(v.node.Nodes) > 0 {
+			return plainText(v.node.Nodes[0])
+		}
+	}
+	if v.data != nil {
+		if s, ok := v.data.(string); ok {
+			return s
+		}
+		b, _ := json.Marshal(v.data)
+		return string(b)
+	}
+	return ""
 }
 
 func document(body []byte) (value, error) {
@@ -29,17 +53,26 @@ func document(body []byte) (value, error) {
 		if err := dec.Decode(&v); err != nil {
 			return value{}, fmt.Errorf("invalid JSON document: %w", err)
 		}
-		return value{data: v}, nil
+		return value{data: v, raw: text}, nil
 	}
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(text))
 	if err != nil {
 		return value{}, err
 	}
-	return value{node: doc.Selection}, nil
+	return value{node: doc.Selection, raw: text}, nil
 }
+func cleanRule(rule string) string {
+	rule = putPattern.ReplaceAllString(rule, "")
+	rule = strings.TrimPrefix(rule, "@@")
+	rule = strings.TrimPrefix(rule, "@css:")
+	rule = strings.TrimPrefix(rule, "css:")
+	return rule
+}
+
 func supported(rule string) error {
+	rule = putPattern.ReplaceAllString(rule, "")
 	low := strings.ToLower(rule)
-	for _, token := range []string{"@js:", "<js>", "javascript:", "@xpath:", "xpath:", "@get:", "@put:", "{{", "}}", "%%"} {
+	for _, token := range []string{"@js:", "<js>", "javascript:", "@xpath:", "xpath:"} {
 		if strings.Contains(low, token) {
 			return fmt.Errorf("unsupported rule construct %q", token)
 		}
@@ -49,7 +82,9 @@ func supported(rule string) error {
 	}
 	return nil
 }
+
 func extract(v value, rule string) (string, error) {
+	rule = cleanRule(rule)
 	if strings.TrimSpace(rule) == "" {
 		return "", nil
 	}
@@ -58,10 +93,7 @@ func extract(v value, rule string) (string, error) {
 	}
 	// Cleaning applies after the complete fallback/concatenation expression.
 	parts := strings.Split(rule, "##")
-	if len(parts) > 3 {
-		return "", fmt.Errorf("unsupported regex cleaning flags")
-	}
-	base := parts[0]
+	base := strings.TrimSpace(parts[0])
 	var text string
 	if strings.Contains(base, "||") {
 		for _, r := range strings.Split(base, "||") {
@@ -74,9 +106,13 @@ func extract(v value, rule string) (string, error) {
 				break
 			}
 		}
-	} else if strings.Contains(base, "&&") {
+	} else if strings.Contains(base, "&&") || strings.Contains(base, "%%") {
 		var out []string
-		for _, r := range strings.Split(base, "&&") {
+		sep := "&&"
+		if strings.Contains(base, "%%") {
+			sep = "%%"
+		}
+		for _, r := range strings.Split(base, sep) {
 			s, e := extract(v, strings.TrimSpace(r))
 			if e != nil {
 				return "", e
@@ -109,7 +145,9 @@ func extract(v value, rule string) (string, error) {
 			}
 		}
 		text = strings.Join(out, "\n")
-	} else {
+	} else if base == "" && len(parts) >= 2 {
+		text = v.rawString()
+	} else if base != "" {
 		if v.node == nil {
 			return "", fmt.Errorf("HTML rule applied to JSON")
 		}
@@ -143,26 +181,39 @@ func extract(v value, rule string) (string, error) {
 		text = strings.Join(out, "\n")
 	}
 	if len(parts) >= 2 {
-		re, err := regexp.Compile(sanitizeRegex(parts[1]))
+		pattern := sanitizeRegex(parts[1])
+		re, err := regexp.Compile(pattern)
 		if err != nil {
 			return "", fmt.Errorf("unsupported/invalid cleaning regex: %w", err)
 		}
 		replacement := ""
-		if len(parts) == 3 {
+		if len(parts) >= 3 {
 			replacement = parts[2]
 		}
-		text = re.ReplaceAllString(text, replacement)
+		replaceFirst := len(parts) > 3 || base == ""
+		if replaceFirst {
+			loc := re.FindStringIndex(text)
+			if loc != nil {
+				matched := text[loc[0]:loc[1]]
+				text = re.ReplaceAllString(matched, replacement)
+			} else {
+				text = ""
+			}
+		} else {
+			text = re.ReplaceAllString(text, replacement)
+		}
 	}
 	return strings.TrimSpace(text), nil
 }
 func elements(v value, rule string) ([]value, error) {
+	rule = cleanRule(rule)
 	if rule == "" {
 		return nil, fmt.Errorf("missing list rule")
 	}
 	if err := supported(rule); err != nil {
 		return nil, err
 	}
-	for _, op := range []string{"||", "&&"} {
+	for _, op := range []string{"||", "&&", "%%"} {
 		if strings.Contains(rule, op) {
 			var out []value
 			for _, r := range strings.Split(rule, op) {
@@ -215,11 +266,47 @@ func elements(v value, rule string) ([]value, error) {
 	return out, nil
 }
 
-var legacyIndex = regexp.MustCompile(`^(class|tag|id)\.([\w-]+)(?:\.(-?\d+))?$`)
+var (
+	legacyIndex         = regexp.MustCompile(`^(class|tag|id)\.([\w-]+)(?:[\.:](-?\d+))?$`)
+	legacyExclude       = regexp.MustCompile(`^(class|tag|id)\.([\w-]+)!(-?\d+)$`)
+	tagIndexPattern     = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9_-]*)\.(-?\d+)$`)
+	bracketIndexPattern = regexp.MustCompile(`^(.+)\[(-?\d+)\]$`)
+	putPattern          = regexp.MustCompile(`(?i)@put:\{[^}]*\}`)
+	getPattern          = regexp.MustCompile(`(?i)@get:\{([^}]+)\}`)
+)
+
+func excludeIndex(s *goquery.Selection, idx int) *goquery.Selection {
+	n := s.Length()
+	if n == 0 {
+		return s
+	}
+	if idx < 0 {
+		idx = n + idx
+	}
+	if idx >= 0 && idx < n {
+		return s.FilterFunction(func(i int, _ *goquery.Selection) bool {
+			return i != idx
+		})
+	}
+	return s
+}
+
+func pickIndex(s *goquery.Selection, idx int) *goquery.Selection {
+	n := s.Length()
+	if n == 0 {
+		return s
+	}
+	if idx < 0 {
+		idx = n + idx
+	}
+	if idx >= 0 && idx < n {
+		return s.Eq(idx)
+	}
+	return s.Slice(0, 0)
+}
 
 func htmlSelect(root *goquery.Selection, rule string, scalar bool) (*goquery.Selection, string, error) {
-	rule = strings.TrimPrefix(rule, "@css:")
-	rule = strings.TrimPrefix(rule, "css:")
+	rule = cleanRule(rule)
 	attr := "text"
 	parts := strings.Split(rule, "@")
 	if scalar && len(parts) > 1 {
@@ -238,23 +325,83 @@ func htmlSelect(root *goquery.Selection, rule string, scalar bool) (*goquery.Sel
 		if p == "" {
 			continue
 		}
-		if m := legacyIndex.FindStringSubmatch(p); m != nil {
+		if strings.HasPrefix(p, "text.") {
+			keyword := strings.TrimPrefix(p, "text.")
+			candidates := cur.Find("*")
+			matched := candidates.FilterFunction(func(_ int, s *goquery.Selection) bool {
+				var own string
+				for _, n := range s.Nodes {
+					for c := n.FirstChild; c != nil; c = c.NextSibling {
+						if c.Type == html.TextNode {
+							own += c.Data
+						}
+					}
+				}
+				return strings.Contains(own, keyword)
+			})
+			if matched.Length() == 0 {
+				matched = candidates.FilterFunction(func(_ int, s *goquery.Selection) bool {
+					return strings.Contains(s.Text(), keyword)
+				})
+			}
+			if matched.Length() == 0 {
+				matched = cur.FilterFunction(func(_ int, s *goquery.Selection) bool {
+					return strings.Contains(s.Text(), keyword)
+				})
+			}
+			cur = matched
+		} else if m := legacyExclude.FindStringSubmatch(p); m != nil {
 			selector := m[2]
 			if m[1] == "class" {
 				selector = "." + selector
-			}
-			if m[1] == "id" {
+			} else if m[1] == "id" {
 				selector = "#" + selector
 			}
 			sub := cur.Find(selector)
 			if sub.Length() == 0 && cur.Filter(selector).Length() > 0 {
 				sub = cur.Filter(selector)
 			}
-			cur = sub
+			idx, _ := strconv.Atoi(m[3])
+			cur = excludeIndex(sub, idx)
+		} else if m := legacyIndex.FindStringSubmatch(p); m != nil {
+			selector := m[2]
+			if m[1] == "class" {
+				selector = "." + selector
+			} else if m[1] == "id" {
+				selector = "#" + selector
+			}
+			sub := cur.Find(selector)
+			if sub.Length() == 0 && cur.Filter(selector).Length() > 0 {
+				sub = cur.Filter(selector)
+			}
 			if m[3] != "" {
 				i, _ := strconv.Atoi(m[3])
-				cur = cur.Eq(i)
+				cur = pickIndex(sub, i)
+			} else {
+				cur = sub
 			}
+		} else if m := tagIndexPattern.FindStringSubmatch(p); m != nil {
+			tagName := m[1]
+			idx, _ := strconv.Atoi(m[2])
+			sub := cur.Find(tagName)
+			if sub.Length() == 0 && cur.Filter(tagName).Length() > 0 {
+				sub = cur.Filter(tagName)
+			}
+			cur = pickIndex(sub, idx)
+		} else if m := bracketIndexPattern.FindStringSubmatch(p); m != nil {
+			baseSel := strings.TrimSpace(m[1])
+			idx, _ := strconv.Atoi(m[2])
+			matcher, err := cascadia.Compile(baseSel)
+			if err != nil {
+				return nil, "", fmt.Errorf("invalid bracket selector %q: %w", baseSel, err)
+			}
+			sub := cur.FindMatcher(matcher)
+			if sub.Length() == 0 && cur.FilterMatcher(matcher).Length() > 0 {
+				sub = cur.FilterMatcher(matcher)
+			}
+			cur = pickIndex(sub, idx)
+		} else if p == "children" {
+			cur = cur.Children()
 		} else {
 			if strings.HasPrefix(p, "class.") || strings.HasPrefix(p, "tag.") || strings.HasPrefix(p, "id.") {
 				return nil, "", fmt.Errorf("unsupported legacy selector %q", p)
@@ -408,7 +555,7 @@ func cleanContent(text, replaceRegex string) (string, error) {
 	}
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" {
+		if line == "" || strings.HasPrefix(line, "//") {
 			continue
 		}
 		if len(line) > 2048 {
@@ -421,19 +568,29 @@ func cleanContent(text, replaceRegex string) (string, error) {
 			line = strings.TrimPrefix(line, "##")
 		}
 		parts := strings.Split(line, "##")
-		if len(parts) > 2 {
+		if len(parts) == 0 {
 			continue
 		}
 		pattern := sanitizeRegex(parts[0])
+		if pattern == "" {
+			continue
+		}
 		replacement := ""
-		if len(parts) == 2 {
+		if len(parts) >= 2 {
 			replacement = parts[1]
 		}
 		re, err := regexp.Compile(pattern)
 		if err != nil {
 			continue
 		}
-		text = re.ReplaceAllString(text, replacement)
+		if len(parts) > 2 || strings.HasSuffix(line, "###") {
+			loc := re.FindStringIndex(text)
+			if loc != nil {
+				text = text[:loc[0]] + re.ReplaceAllString(text[loc[0]:loc[1]], replacement) + text[loc[1]:]
+			}
+		} else {
+			text = re.ReplaceAllString(text, replacement)
+		}
 	}
 	return strings.TrimSpace(text), nil
 }

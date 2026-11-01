@@ -64,18 +64,24 @@ func parseSource(s Source) (sourceRules, error) {
 		rules   map[string]string
 		allowed string
 	}{
-		{"ruleSearch", r.Search, " bookList name author bookUrl coverUrl intro "},
-		{"ruleBookInfo", r.Info, " init name author coverUrl intro tocUrl "},
-		{"ruleToc", r.Toc, " chapterList chapterName chapterUrl nextTocUrl "},
-		{"ruleContent", r.Content, " content nextContentUrl replaceRegex "},
+		{"ruleSearch", r.Search, " bookList name author bookUrl coverUrl intro kind lastChapter wordCount checkKeyWord updateTime "},
+		{"ruleBookInfo", r.Info, " init name author coverUrl intro tocUrl kind lastChapter wordCount updateTime canReName downloadUrl "},
+		{"ruleToc", r.Toc, " chapterList chapterName chapterUrl nextTocUrl updateTime formatJs "},
+		{"ruleContent", r.Content, " content nextContentUrl replaceRegex imageStyle title sourceRegex "},
 	} {
 		for key, rule := range group.rules {
 			// Display-only metadata is not evaluated in this version. Ignore it rather
 			// than blocking otherwise usable search/reading rules.
-			if (group.name == "ruleSearch" || group.name == "ruleBookInfo") && strings.Contains(" kind lastChapter wordCount checkKeyWord ", " "+key+" ") {
+			if (group.name == "ruleSearch" || group.name == "ruleBookInfo") && strings.Contains(" kind lastChapter wordCount checkKeyWord updateTime canReName downloadUrl ", " "+key+" ") {
 				continue
 			}
-			if group.name == "ruleContent" && key == "imageStyle" {
+			if group.name == "ruleToc" && strings.Contains(" updateTime formatJs ", " "+key+" ") {
+				continue
+			}
+			if group.name == "ruleContent" && strings.Contains(" imageStyle title sourceRegex ", " "+key+" ") {
+				continue
+			}
+			if key == "replaceRegex" {
 				continue
 			}
 			if strings.TrimSpace(rule) == "" {

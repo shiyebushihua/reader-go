@@ -88,6 +88,24 @@ func TestJSONRulesAndOptions(t *testing.T) {
 	if err != nil || s != "B" {
 		t.Fatal(s, err)
 	}
+	h2, _ := document([]byte(`<div><ul><li>A</li></ul><ul><li>B</li></ul><ul><li><a href="/c1">First</a></li><li><a href="/c2">Second</a></li></ul><a href="/next">下一页</a><p>P1</p><p>P2</p></div>`))
+	chaps, err := elements(h2, "ul.2@li a")
+	if err != nil || len(chaps) != 2 {
+		t.Fatalf("ul.2@li a failed: %v len=%d", err, len(chaps))
+	}
+	cname, _ := extract(chaps[0], "text")
+	curl, _ := extract(chaps[0], "href")
+	if cname != "First" || curl != "/c1" {
+		t.Fatalf("chapter mismatch: %s %s", cname, curl)
+	}
+	next, err := extract(h2, "text.下一页@href")
+	if err != nil || next != "/next" {
+		t.Fatalf("text.下一页@href failed: %s %v", next, err)
+	}
+	lastP, err := extract(h2, "p.-1@text")
+	if err != nil || lastP != "P2" {
+		t.Fatalf("p.-1@text failed: %s %v", lastP, err)
+	}
 	if _, err = extract(h, "[broken@text"); err == nil {
 		t.Fatal("invalid CSS accepted")
 	}
@@ -330,5 +348,207 @@ func TestFetchFailureBounds(t *testing.T) {
 		if _, err := e.fetch(context.Background(), spec); err == nil {
 			t.Fatal("invalid request accepted")
 		}
+	}
+}
+
+func TestHaitangRegexAndTocFlow(t *testing.T) {
+	e := fixtureEngine(t, map[string]string{
+		"/book/56817/": `<meta property="og:novel:book_name" content="都市偷心龙爪手"/>
+<meta property="og:novel:author" content="wtw1974"/>
+<meta property="og:novel:category" content="都市言情"/>
+<meta property="og:novel:description" content="简介测试"/>
+<meta property="og:image" content="https://img.example/cover.jpg"/>
+<meta property="og:novel:latest_chapter_name" content="第100章 结局"/>
+<ul><li>Header1</li></ul>
+<ul><li>Header2</li></ul>
+<ul>
+  <li><a href="/chapter/1.html">第一章 初遇</a></li>
+  <li><a href="/chapter/2.html">第二章 龙爪手</a></li>
+</ul>
+<a href="/book/56817_2/">下一页</a>`,
+		"/book/56817_2/": `<ul><li>H1</li></ul><ul><li>H2</li></ul>
+<ul>
+  <li><a href="/chapter/3.html">第三章 展威</a></li>
+</ul>`,
+		"/chapter/1.html": `<div id="content"><p>第一章正文内容</p></div>`,
+	})
+
+	s := Source{
+		ID: "haitang",
+		Rule: json.RawMessage(`{
+			"bookSourceUrl": "https://m.haitang4.com#🎃",
+			"bookSourceName": "海棠书屋🎃#3",
+			"ruleBookInfo": {
+				"name": "##:book_name\"[^\"]+\"([^\"]*)##$1###",
+				"author": "##:author\"[^\"]+\"([^\"]*)##$1###",
+				"kind": "##:category\"[^\"]+\"([^\"]*)##$1###",
+				"intro": "##:description\"[^\"]+\"([^\"]*)##$1###",
+				"coverUrl": "##og:image\"[^\"]+\"([^\"]*)##$1###",
+				"lastChapter": "##_chapter_name\"[^\"]+\"([^\"]*)##$1###"
+			},
+			"ruleToc": {
+				"chapterList": "ul.2@li a",
+				"chapterName": "text",
+				"chapterUrl": "href",
+				"nextTocUrl": "text.下一页@href"
+			},
+			"ruleContent": {
+				"content": "div#content@html",
+				"nextContentUrl": "text.下一页@href"
+			}
+		}`),
+	}
+
+	d, err := e.Details(context.Background(), s, "https://m.haitang4.com/book/56817/")
+	if err != nil {
+		t.Fatalf("Details failed: %v", err)
+	}
+	if d.Title != "都市偷心龙爪手" {
+		t.Errorf("Title = %q, want '都市偷心龙爪手'", d.Title)
+	}
+	if d.Author != "wtw1974" {
+		t.Errorf("Author = %q, want 'wtw1974'", d.Author)
+	}
+	if d.Cover != "https://img.example/cover.jpg" {
+		t.Errorf("Cover = %q, want 'https://img.example/cover.jpg'", d.Cover)
+	}
+	if d.Intro != "简介测试" {
+		t.Errorf("Intro = %q, want '简介测试'", d.Intro)
+	}
+	if len(d.Chapters) != 3 {
+		t.Fatalf("Chapters count = %d, want 3", len(d.Chapters))
+	}
+	if d.Chapters[0].Title != "第一章 初遇" || d.Chapters[0].URL != "https://m.haitang4.com/chapter/1.html" {
+		t.Errorf("Chapter 0 mismatch: %+v", d.Chapters[0])
+	}
+	if d.Chapters[2].Title != "第三章 展威" || d.Chapters[2].URL != "https://m.haitang4.com/chapter/3.html" {
+		t.Errorf("Chapter 2 mismatch: %+v", d.Chapters[2])
+	}
+
+	content, err := e.Content(context.Background(), s, d.Chapters[0].URL)
+	if err != nil {
+		t.Fatalf("Content failed: %v", err)
+	}
+	if !strings.Contains(content, "第一章正文内容") {
+		t.Errorf("Content mismatch: %q", content)
+	}
+}
+
+func TestLegado3RulesCompatibility(t *testing.T) {
+	htmlDoc := `
+	<div id="main">
+		<div class="header"><h1>书名测试</h1><span class="author">作者测试</span></div>
+		<ul class="catalog">
+			<li class="header-item"><span>目录表头</span></li>
+			<li class="item"><a href="/chap/1">第一回 楔子</a><span>字数: 3000</span></li>
+			<li class="item"><a href="/chap/2">第二回 启程</a><span>字数: 3200</span></li>
+			<li class="item"><a href="/chap/3">第三回 探秘</a><span>字数: 3500</span></li>
+		</ul>
+		<div class="content-box">
+			<script>var ad = 1;</script>
+			<p>段落一：这是正文内容。</p>
+			<p>段落二：包含广告水印（请访问 www.bad.com 购买）。</p>
+			<p>段落三：结尾。</p>
+		</div>
+	</div>
+	`
+	docVal, err := document([]byte(htmlDoc))
+	if err != nil {
+		t.Fatalf("document parse failed: %v", err)
+	}
+
+	// 1. 测试 @@ 前缀与 @put:{...} 剥离
+	t1, err := extract(docVal, "@@.header h1@put:{id: \"123\"}@text")
+	if err != nil || t1 != "书名测试" {
+		t.Errorf("@@ & @put extraction failed: %q, err=%v", t1, err)
+	}
+
+	// 2. 测试方括号索引 bracketIndexPattern
+	firstChap, err := extract(docVal, "ul.catalog li.item a[0]@text")
+	if err != nil || firstChap != "第一回 楔子" {
+		t.Errorf("bracket index [0] failed: %q, err=%v", firstChap, err)
+	}
+	lastChap, err := extract(docVal, "ul.catalog li.item a[-1]@text")
+	if err != nil || lastChap != "第三回 探秘" {
+		t.Errorf("bracket index [-1] failed: %q, err=%v", lastChap, err)
+	}
+
+	// 3. 测试排除索引 legacyExclude (!0 排除表头)
+	filteredChaps, err := elements(docVal, "ul.catalog@tag.li!0")
+	if err != nil || len(filteredChaps) != 3 {
+		t.Fatalf("exclude index !0 failed: len=%d, err=%v", len(filteredChaps), err)
+	}
+
+	// 4. 测试 textNodes 与 ownText
+	own, err := extract(docVal, ".catalog li.item[0]@ownText")
+	if err != nil {
+		t.Errorf("ownText failed: %v", err)
+	}
+	_ = own
+
+	// 5. 测试 html / all 提取
+	innerH, err := extract(docVal, ".content-box@html")
+	if err != nil || strings.Contains(innerH, "var ad = 1") || !strings.Contains(innerH, "段落一") {
+		t.Errorf("html attr should extract content and remove script: %q, err=%v", innerH, err)
+	}
+
+	// 6. 测试 cleanContent 多行正则清洗与注释忽略
+	dirtyContent := "段落一：这是正文内容。\n段落二：包含广告水印（请访问 www.bad.com 购买）。\n段落三：结尾。"
+	cleanRules := `
+	// 这是注释行，应该被忽略
+	（请访问.*?购买）##
+	www\.bad\.com##
+	`
+	cleaned, err := cleanContent(dirtyContent, cleanRules)
+	if err != nil {
+		t.Fatalf("cleanContent failed: %v", err)
+	}
+	if strings.Contains(cleaned, "www.bad.com") || strings.Contains(cleaned, "购买") {
+		t.Errorf("cleaned content still contains ad: %q", cleaned)
+	}
+
+	// 7. 测试书源包含丰富 Legado 扩展字段时的 parseSource 兼容性
+	richSource := Source{
+		ID: "rich_source",
+		Rule: json.RawMessage(`{
+			"bookSourceUrl": "https://rich.example",
+			"searchUrl": "/search?key={{key}}",
+			"ruleSearch": {
+				"bookList": ".item",
+				"name": "h2@text",
+				"author": "span.author@text",
+				"bookUrl": "a@href",
+				"wordCount": "span.words@text",
+				"lastChapter": "span.last@text",
+				"updateTime": "span.time@text"
+			},
+			"ruleBookInfo": {
+				"name": "h1@text",
+				"author": "span.author@text",
+				"kind": "span.kind@text",
+				"wordCount": "span.words@text",
+				"updateTime": "span.time@text",
+				"canReName": "true"
+			},
+			"ruleToc": {
+				"chapterList": "ul.list li a",
+				"chapterName": "text",
+				"chapterUrl": "href",
+				"updateTime": "span.time@text"
+			},
+			"ruleContent": {
+				"content": "#content@html",
+				"imageStyle": "0",
+				"title": "h1@text",
+				"replaceRegex": "// comment\n广告##"
+			}
+		}`),
+	}
+	parsed, err := parseSource(richSource)
+	if err != nil {
+		t.Fatalf("parseSource with rich Legado fields failed: %v", err)
+	}
+	if parsed.BookSourceURL != "https://rich.example" {
+		t.Errorf("parsed URL mismatch: %s", parsed.BookSourceURL)
 	}
 }
