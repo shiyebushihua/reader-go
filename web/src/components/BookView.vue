@@ -112,7 +112,7 @@ async function executeSearchSources() {
     }
     sourcesMap.value = map
     if (!enabledIds.length) {
-      changeSourceError.value = '当前暂无已启用的个人书源，请先前往「书源管理」导入并启用书源。'
+      changeSourceError.value = '暂无已启用的书源。'
       return
     }
     const results = await api<SearchResult[]>('/search', 'POST', {
@@ -189,7 +189,7 @@ async function load() {
       chapters.value = cachedChapters || []
       group.value = cachedBook.group || ''
       isOfflineReady.value = true
-      notice.value = '离线缓存就绪'
+      notice.value = '已离线'
       error.value = ''
     } else {
       error.value = message(e)
@@ -231,7 +231,7 @@ async function refresh() {
 async function remove() {
   const ok = await showConfirm({
     title: '移除书籍',
-    message: '确定从书架移除此书吗？阅读进度、书签和本地文件也会被删除，此操作无法撤销。',
+    message: '确定从书架移除吗？',
     confirmText: '确认移除',
     cancelText: '取消',
     danger: true
@@ -319,7 +319,7 @@ onMounted(() => {
 
 <template>
   <div class="page-top-nav">
-    <a href="#/library" class="back-link"><ArrowLeft :size="16" />返回我的书架</a>
+    <a href="#/library" class="back-link"><ArrowLeft :size="16" />返回书架</a>
   </div>
   <div v-if="error" class="error" role="alert">
     <span>{{ error }}</span>
@@ -331,13 +331,13 @@ onMounted(() => {
     </div>
   </div>
   <div v-if="notice" class="success" role="status">{{ notice }}</div>
-  <div v-if="loading" class="empty" role="status">正在翻开书籍信息…</div>
+  <div v-if="loading" class="empty" role="status">加载中…</div>
   <template v-else-if="book">
     <section class="book-detail">
       <BookCover :title="book.title" :kind="book.kind" />
       <div class="book-detail-info">
         <div class="detail-header-tags">
-          <span class="eyebrow">{{ book.kind === 'online' ? '网络书源' : '本地藏书' }}</span>
+          <span class="eyebrow">{{ book.kind === 'online' ? '网络' : '本地' }}</span>
           <span v-if="currentSourceName" class="source-origin-badge">{{ currentSourceName }}</span>
           <span v-if="isOfflineReady" class="offline-badge">离线缓存就绪</span>
         </div>
@@ -367,26 +367,26 @@ onMounted(() => {
             <BookOpen :size="18" />{{ book.progress ? '继续阅读' : '开始阅读' }}<ArrowRight :size="17" />
           </a>
           <button v-else disabled>暂无可读章节</button>
-          <button v-if="book.kind === 'online'" :disabled="busy || cachingBusy" @click="openChangeSourceModal" title="切换到其他可用书源">
+          <button v-if="book.kind === 'online'" :disabled="busy || cachingBusy" @click="openChangeSourceModal" title="换源">
             <Shuffle :size="16" />换源
           </button>
-          <button v-if="book.kind === 'online'" :disabled="busy || cachingBusy" @click="refresh" title="向书源请求刷新章节目录">
+          <button v-if="book.kind === 'online'" :disabled="busy || cachingBusy" @click="refresh" title="更新目录">
             <RefreshCw :size="16" />更新目录
           </button>
-          <button v-if="chapters.length && !cachingBusy" :disabled="busy" @click="cacheSubsequent" title="从当前阅读进度向后缓存章节">
-            <Download :size="16" />离线缓存后续章节
+          <button v-if="chapters.length && !cachingBusy" :disabled="busy" @click="cacheSubsequent" title="离线缓存后续章节">
+            <Download :size="16" />缓存后续
           </button>
-          <button v-if="chapters.length && !cachingBusy" :disabled="busy" @click="cacheAll" title="离线下载全书所有章节">
+          <button v-if="chapters.length && !cachingBusy" :disabled="busy" @click="cacheAll" title="缓存全书">
             <Download :size="16" />离线全书
           </button>
           <button
             type="button"
             class="button secondary"
             @click="toolsExpanded = !toolsExpanded"
-            :title="toolsExpanded ? '收起工具箱' : '展开更多设置与工具'"
+            :title="toolsExpanded ? '收起' : '更多'"
           >
             <SlidersHorizontal :size="15" />
-            <span>{{ toolsExpanded ? '收起工具' : '更多选项' }}</span>
+            <span>{{ toolsExpanded ? '收起' : '更多' }}</span>
           </button>
           <button v-if="cachingBusy" class="danger" @click="cancelCaching">
             <X :size="16" />取消缓存
@@ -396,7 +396,7 @@ onMounted(() => {
           <div class="offline-cache-status">
             <span class="offline-cached-count">已缓存 {{ cachedCount }} / {{ chapters.length }} 章</span>
             <span v-if="cachingBusy" class="offline-progress-text">
-              正在缓存：{{ cachingProgress.chapterTitle || '正在拉取…' }} ({{ cachingProgress.current }}/{{ cachingProgress.total }} · {{ cachingProgress.percent }}%)
+              缓存中：{{ cachingProgress.chapterTitle || '…' }} ({{ cachingProgress.current }}/{{ cachingProgress.total }})
             </span>
           </div>
           <div v-if="cachingBusy" class="offline-progress-track">
@@ -404,18 +404,18 @@ onMounted(() => {
           </div>
         </div>
         <p v-if="book.progress" class="fine-print">
-          上次读到：{{ chapters.find(c => c.id === book?.progress?.chapterId)?.title || '已保存章节' }} · 章内 {{ Math.round(book.progress.position * 100) }}%
+          读至：{{ chapters.find(c => c.id === book?.progress?.chapterId)?.title || '当前章节' }} ({{ Math.round(book.progress.position * 100) }}%)
         </p>
         <div v-if="toolsExpanded" class="book-secondary-tools">
           <form class="inline-form" @submit.prevent="saveGroup">
-            <label>书架分组<input v-model="group" maxlength="80" placeholder="如：文学、正在读" /></label>
-            <button :disabled="busy">保存分组</button>
+            <label>分组<input v-model="group" maxlength="80" placeholder="分组名称" /></label>
+            <button :disabled="busy">保存</button>
           </form>
-          <a v-if="chapters.length" class="button secondary" :href="getExportUrl(book.id)" target="_blank" title="导出已缓存章节为TXT文档">
+          <a v-if="chapters.length" class="button secondary" :href="getExportUrl(book.id)" target="_blank" title="导出TXT">
             <Download :size="15" />导出TXT
           </a>
           <button class="text-button danger" :disabled="busy" @click="remove">
-            <Trash2 :size="15" />从书架移除
+            <Trash2 :size="15" />移除
           </button>
         </div>
       </div>
@@ -429,20 +429,20 @@ onMounted(() => {
             type="button"
             class="secondary compact-btn"
             @click="scrollToCurrentChapter"
-            title="定位到当前阅读章节"
+            title="定位当前章"
           >
             <LocateFixed :size="15" />
-            <span>定位当前章</span>
+            <span>定位</span>
           </button>
           <button
             v-if="chapters.length > 1"
             type="button"
             class="secondary compact-btn"
             @click="tocReversed = !tocReversed"
-            :title="tocReversed ? '切换为正序目录' : '切换为倒序目录（最新章节在前）'"
+            :title="tocReversed ? '正序' : '倒序'"
           >
             <ArrowUpDown :size="15" />
-            <span>{{ tocReversed ? '倒序 · 最新在前' : '正序 · 从头看起' }}</span>
+            <span>{{ tocReversed ? "倒序" : "正序" }}</span>
           </button>
           <label class="search-input">
             <Search :size="16" />
@@ -464,7 +464,7 @@ onMounted(() => {
         </a>
       </div>
       <p v-if="!filtered.length" class="empty">
-        {{ chapters.length ? '没有匹配的章节。' : '暂无章节，在线书籍可尝试更新目录或点击换源。' }}
+        {{ chapters.length ? '没有匹配的章节。' : '暂无章节。' }}
       </p>
     </section>
 
@@ -473,9 +473,9 @@ onMounted(() => {
       <div class="modal-card change-source-dialog" @click.stop>
         <div class="modal-header">
           <div>
-            <h3>换源中心</h3>
+            <h3>换源</h3>
             <p class="muted" style="font-size: 13px; margin-top: 2px;">
-              当前书籍：「{{ book.title }}」· 切换书源后自动保留阅读进度
+              《{{ book.title }}》
             </p>
           </div>
           <button class="icon-button" @click="changeSourceOpen = false" aria-label="关闭换源">
@@ -486,13 +486,13 @@ onMounted(() => {
         <div class="modal-search-row">
           <input
             v-model="changeSourceQuery"
-            placeholder="搜索书籍关键词进行换源…"
+            placeholder="搜索关键词…"
             @keyup.enter="executeSearchSources"
           />
           <button class="primary" :disabled="changeSourceLoading" @click="executeSearchSources">
             <LoaderCircle v-if="changeSourceLoading" class="spin" :size="15" />
             <Search v-else :size="15" />
-            <span>重新搜索</span>
+            <span>搜索</span>
           </button>
         </div>
 
@@ -504,11 +504,11 @@ onMounted(() => {
         <div class="change-source-body">
           <div v-if="changeSourceLoading" class="empty" style="padding: 40px 0;">
             <LoaderCircle class="spin" :size="28" />
-            <p class="muted" style="margin-top: 10px;">正在检索你的可用书源匹配书籍…</p>
+            <p class="muted" style="margin-top: 10px;">正在检索书源…</p>
           </div>
 
           <div v-else-if="!changeSourceResults.length" class="empty" style="padding: 40px 0;">
-            <p class="muted">未检索到其他可用书源结果，可修改关键词后重新搜索。</p>
+            <p class="muted">未找到其他书源。</p>
           </div>
 
           <div v-else class="source-candidates-list">

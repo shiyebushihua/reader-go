@@ -198,7 +198,7 @@ async function removeBook(book: Book) {
   if (removingId.value) return
   const ok = await showConfirm({
     title: '移除书籍',
-    message: `确定从书架移除《${book.title}》吗？阅读进度、书签和本地缓存也将一并清除，此操作不可撤销。`,
+    message: `确定从书架移除《${book.title}》吗？`,
     confirmText: '确认移除',
     cancelText: '取消',
     danger: true
@@ -241,12 +241,11 @@ onMounted(() => {
 <template>
   <header :class="['page-header', importMode ? 'import-header' : 'shelf-header']">
     <div>
-      <span class="eyebrow">{{ importMode ? 'IMPORT' : 'SHELF' }}</span>
       <h1>
         {{ importMode ? '导入书籍' : '我的书架' }}
         <span v-if="!importMode && (!loading || books.length)" class="count">{{ books.length }}</span>
       </h1>
-      <p>{{ importMode ? '支持导入本地 TXT 或 EPUB 电子书，自动智能切分卷章。' : '中性清爽的个人阅读书架，随时开启沉浸阅读。' }}</p>
+      
     </div>
     <div class="header-actions">
       <a v-if="!importMode" class="button primary" href="#/import">
@@ -266,10 +265,7 @@ onMounted(() => {
   <template v-if="importMode">
     <section class="import-stepper-wrap">
       <form class="panel import-stepper-panel" @submit.prevent="upload">
-        <div class="stepper-status-badge">
-          <span class="step-num">{{ file ? '步骤 2 / 2' : '步骤 1 / 2' }}</span>
-          <span class="step-desc">{{ file ? '确认文件信息并导入书架' : '选择本地电子书文件' }}</span>
-        </div>
+        
 
         <div
           :class="['dropzone', { dragging, 'has-file': !!file }]"
@@ -280,18 +276,18 @@ onMounted(() => {
           <span class="round-icon">
             <Upload :size="26" />
           </span>
-          <h2>{{ file ? file.name : '选择或拖放电子书到此处' }}</h2>
+          <h2>{{ file ? file.name : '拖放或选择电子书' }}</h2>
           <p>
             {{
               file
-                ? `${(file.size / 1024 / 1024).toFixed(2)} MB · 格式已验证，随时可导入`
-                : '支持 TXT 与 EPUB 格式，单文件上限 100MB'
+                ? `${(file.size / 1024 / 1024).toFixed(2)} MB`
+                : '支持 TXT / EPUB'
             }}
           </p>
 
           <label class="button secondary file-picker-trigger">
             <FileText :size="16" />
-            <span>{{ file ? '重新选择其他文件' : '选择本地文件 (.txt / .epub)' }}</span>
+            <span>{{ file ? '重新选择' : '选择文件' }}</span>
             <input
               type="file"
               accept=".txt,.epub"
@@ -311,51 +307,29 @@ onMounted(() => {
           >
             <LoaderCircle v-if="importing" class="spin" :size="18" />
             <Upload v-else :size="18" />
-            {{ importing ? '正在上传并智能解析章节…' : '导入到我的书架' }}
+            {{ importing ? '正在导入…' : '导入书架' }}
           </button>
-          <p v-else class="import-idle-tip">请先点击上方按钮选择 TXT 或 EPUB 文件</p>
+          
         </div>
 
-        <p class="fine-print">文件大小上限 100MB，服务端将自动校验 UTF-8/GBK 编码并建立章节索引。</p>
+        
       </form>
 
-      <aside class="panel import-format-card">
-        <div class="import-notes-head">
-          <span class="eyebrow">GUIDELINES</span>
-          <h2>格式与规格支持</h2>
-        </div>
-        <div class="import-spec-list">
-          <div class="import-spec-item">
-            <span class="spec-icon"><FileText :size="18" /></span>
-            <div>
-              <h3>TXT 纯文本</h3>
-              <p>支持 UTF-8 与 GBK 编码，智能识别“第X章/卷”并自动生成目录。</p>
-            </div>
-          </div>
-          <div class="import-spec-item">
-            <span class="spec-icon"><BookOpen :size="18" /></span>
-            <div>
-              <h3>EPUB 电子书</h3>
-              <p>支持标准 EPUB 2/3 标准电子书，解析原书完整目录与段落。</p>
-            </div>
-          </div>
-        </div>
-        <p class="fine-print">请确认仅导入你合法拥有的书籍或授权作品。</p>
-      </aside>
+      
     </section>
 
     <!-- 导入成功反馈 -->
     <div v-if="imported" class="success import-success" role="status">
       <div>
-        <strong>《{{ imported.title }}》已成功加入书架</strong>
-        <p>全书共解析 {{ imported.chapterCount }} 章，已就绪。</p>
+        <strong>《{{ imported.title }}》已加入书架</strong>
+        <p>共 {{ imported.chapterCount }} 章</p>
       </div>
       <div class="actions">
         <a class="button primary" :href="`#/read/${id(imported.id)}`">
           <BookOpen :size="18" />立即阅读
         </a>
         <a class="button secondary" :href="`#/book/${id(imported.id)}`">
-          查看详情与目录<ArrowUpRight :size="17" />
+          书籍详情<ArrowUpRight :size="17" />
         </a>
       </div>
     </div>
@@ -366,14 +340,14 @@ onMounted(() => {
     <!-- 续读卡片（增加章节名与明确进度表达，消除歧义） -->
     <section v-if="continuing && (!loading || books.length)" class="continue-card">
       <div class="continue-card-content">
-        <span class="eyebrow">CONTINUE READING</span>
+        <span class="eyebrow">最近阅读</span>
         <h2>{{ continuing.title }}</h2>
         <p class="continue-chapter-info">
           <span class="continue-author">{{ cleanAuthor(continuing.author) }}</span>
           <span class="dot">·</span>
           <span class="continue-chapter-title">{{ continuingChapterTitle || '当前章节' }}</span>
           <span class="dot">·</span>
-          <span class="continue-progress-val">本章已读 {{ Math.round((continuing.progress?.position || 0) * 100) }}%</span>
+          <span class="continue-progress-val">已读 {{ Math.round((continuing.progress?.position || 0) * 100) }}%</span>
         </p>
         <div class="continue-progress-bar-wrap">
           <div
@@ -386,7 +360,7 @@ onMounted(() => {
           <a class="button primary continue-action" :href="`#/read/${id(continuing.id)}`">
             <BookOpen :size="18" />继续阅读
           </a>
-          <a class="button secondary" :href="`#/book/${id(continuing.id)}`">书籍详情</a>
+          <a class="button secondary" :href="`#/book/${id(continuing.id)}`">详情</a>
         </div>
       </div>
     </section>
@@ -394,7 +368,7 @@ onMounted(() => {
     <!-- 工具栏：分组过滤、搜索、排序、视图切换 -->
     <div class="library-toolbar">
       <div class="tabs">
-        <button :class="{ selected: !group }" @click="group = ''">全部藏书</button>
+        <button :class="{ selected: !group }" @click="group = ''">全部</button>
         <button v-for="g in groups" :key="g" :class="{ selected: group === g }" @click="group = g">{{ g }}</button>
       </div>
       <div class="toolbar-controls">
@@ -403,8 +377,8 @@ onMounted(() => {
           <input v-model="query" aria-label="筛选书架藏书" placeholder="搜索书名或作者…" />
         </label>
         <select v-model="sort" aria-label="书架排序方式">
-          <option value="recent">最近阅读/加入</option>
-          <option value="title">书名字母排序</option>
+          <option value="recent">最近阅读</option>
+          <option value="title">书名排序</option>
         </select>
         <div class="view-mode-toggle" role="group" aria-label="视图切换">
           <button
@@ -444,25 +418,22 @@ onMounted(() => {
     <!-- 空书架 -->
     <section v-else-if="!books.length && !loading && !error" class="empty shelf-empty">
       <span class="round-icon"><Library :size="32" /></span>
-      <span class="eyebrow">EMPTY SHELF</span>
-      <h2>书架暂无藏书</h2>
-      <p>你可以导入本地 TXT / EPUB 电子书，或通过全网书源搜索添加书籍。</p>
+      <h2>暂无书籍</h2>
       <div class="actions">
         <a class="button primary" href="#/import"><Plus :size="18" />导入书籍</a>
-        <a class="button secondary" href="#/search">搜索网络书籍<ArrowUpRight :size="17" /></a>
+        <a class="button secondary" href="#/search">搜索书籍<ArrowUpRight :size="17" /></a>
       </div>
     </section>
 
     <!-- 筛选无匹配结果：联动搜索引导 -->
     <section v-else-if="!filtered.length && !error" class="empty filter-empty">
       <Search :size="32" />
-      <h2>书架中未找到“{{ query }}”</h2>
-      <p>当前书架没有匹配的藏书。你可以清除筛选，或者直接去全网搜索本书。</p>
+      <h2>未找到“{{ query }}”</h2>
       <div class="actions">
         <a class="button primary" :href="`#/search?q=${encodeURIComponent(query)}`">
-          去搜索《{{ query }}》<ArrowUpRight :size="17" />
+          搜索《{{ query }}》<ArrowUpRight :size="17" />
         </a>
-        <button class="button secondary" @click="query = ''; group = ''">清除筛选条件</button>
+        <button class="button secondary" @click="query = ''; group = ''">清除筛选</button>
       </div>
     </section>
 
@@ -496,7 +467,7 @@ onMounted(() => {
             <div class="book-source-tag-row">
               <span
                 :class="['book-source-tag', { 'duplicate-source': isDuplicateTitle(book.title) }]"
-                :title="isDuplicateTitle(book.title) ? '书架存在多本同名书籍，这是来自此来源的版本' : ''"
+                :title="isDuplicateTitle(book.title) ? '' : ''"
               >
                 {{ book.sourceName || (book.kind === 'local' ? '本地导入' : '网络书源') }}
               </span>
@@ -565,9 +536,9 @@ onMounted(() => {
               @click="openReaderDirect(book.id)"
             >
               <BookOpen :size="14" />
-              <span>{{ book.progress ? '继续阅读' : '开始阅读' }}</span>
+              <span>{{ book.progress ? '继续' : '阅读' }}</span>
             </button>
-            <a class="button secondary small" :href="`#/book/${id(book.id)}`">目录详情</a>
+            <a class="button secondary small" :href="`#/book/${id(book.id)}`">目录</a>
             <button
               type="button"
               class="icon-button danger-icon small"
@@ -612,7 +583,7 @@ onMounted(() => {
       </div>
 
       <footer class="shelf-footer">
-        当前书架共有 {{ filtered.length }} 本藏书
+        共 {{ filtered.length }} 本
       </footer>
     </template>
   </template>

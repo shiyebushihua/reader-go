@@ -107,7 +107,7 @@ const sourcesMap = ref<Record<string, string>>({})
 const enabledSourceIds = ref<string[]>([])
 const lastDayTheme = ref('sepia')
 
-// Legado Feature: Real-time Clock, Battery & Screen WakeLock
+// Feature: Real-time Clock, Battery & Screen WakeLock
 const cachedChapterIds = ref<Set<string>>(new Set())
 const currentTimeStr = ref('')
 const batteryLevel = ref('')
@@ -169,22 +169,22 @@ const prefs = reactive<ExtendedReaderPrefs>({
 
 // Themes metadata (7 major-reader inspired eye-care themes)
 const themes = [
-  { id: 'sepia', name: '暖阳羊皮', bg: '#f4edd9', fg: '#332b21', border: '#e2d3b5', desc: '经典纸质，柔和护眼' },
-  { id: 'meadow', name: '竹叶淡绿', bg: '#e7efe5', fg: '#1f3022', border: '#ccdccc', desc: '微信读书护眼经典' },
-  { id: 'cream', name: '秋水米白', bg: '#f7f4ee', fg: '#2b2723', border: '#e6dfd1', desc: '柔和细腻，宛若纸书' },
-  { id: 'light', name: '现代素白', bg: '#f8f9fa', fg: '#1f2429', border: '#e1e4e8', desc: '清爽明净，现代极简' },
-  { id: 'twilight', name: '暮霭灰蓝', bg: '#222933', fg: '#d8dfe8', border: '#323c4b', desc: '暗光环境，沉静低调' },
-  { id: 'midnight', name: '深邃夜读', bg: '#121316', fg: '#cfd4dc', border: '#252932', desc: 'OLED纯粹黑，省电不刺眼' },
-  { id: 'vintage', name: '复古咖啡', bg: '#ebdcc3', fg: '#3b2c1d', border: '#d9c4a5', desc: '旧书年轮，静谧典雅' }
+  { id: 'sepia', name: '暖阳羊皮', bg: '#f4edd9', fg: '#332b21', border: '#e2d3b5', desc: '' },
+  { id: 'meadow', name: '竹叶淡绿', bg: '#e7efe5', fg: '#1f3022', border: '#ccdccc', desc: '' },
+  { id: 'cream', name: '秋水米白', bg: '#f7f4ee', fg: '#2b2723', border: '#e6dfd1', desc: '' },
+  { id: 'light', name: '现代素白', bg: '#f8f9fa', fg: '#1f2429', border: '#e1e4e8', desc: '' },
+  { id: 'twilight', name: '暮霭灰蓝', bg: '#222933', fg: '#d8dfe8', border: '#323c4b', desc: '' },
+  { id: 'midnight', name: '深邃夜读', bg: '#121316', fg: '#cfd4dc', border: '#252932', desc: '' },
+  { id: 'vintage', name: '复古咖啡', bg: '#ebdcc3', fg: '#3b2c1d', border: '#d9c4a5', desc: '' }
 ]
 
 // Fonts metadata (Popular reader fonts)
 const fonts = [
-  { id: 'wenkai', name: '霞鹜文楷', family: 'var(--font-wenkai)', sample: '落霞与孤鹜齐飞', desc: '温润人文 · 舒适护眼' },
-  { id: 'serif', name: '思源宋体', family: 'var(--font-serif)', sample: '秋水共长天一色', desc: '经典典雅 · 书卷气息' },
-  { id: 'sans', name: '思源黑体', family: 'var(--font-sans)', sample: '天地有大美而不言', desc: '现代清晰 · 简洁利落' },
-  { id: 'kaiti', name: '书法楷体', family: 'var(--font-kaiti)', sample: '字里千秋意蕴长', desc: '笔墨生动 · 传统韵致' },
-  { id: 'fangsong', name: '典雅仿宋', family: 'var(--font-fangsong)', sample: '文质彬彬然后君子', desc: '古朴清秀 · 文学排版' }
+  { id: 'wenkai', name: '霞鹜文楷', family: 'var(--font-wenkai)', sample: '', desc: '' },
+  { id: 'serif', name: '思源宋体', family: 'var(--font-serif)', sample: '', desc: '' },
+  { id: 'sans', name: '思源黑体', family: 'var(--font-sans)', sample: '', desc: '' },
+  { id: 'kaiti', name: '书法楷体', family: 'var(--font-kaiti)', sample: '', desc: '' },
+  { id: 'fangsong', name: '典雅仿宋', family: 'var(--font-fangsong)', sample: '', desc: '' }
 ]
 
 // Animation speed metadata
@@ -218,7 +218,7 @@ const toc = computed(() => {
   return tocReversed.value ? [...list].reverse() : list
 })
 
-// Legado Feature: Text Purification Rules
+// Feature: Text Purification Rules
 const defaultPurifyRules: PurifyRule[] = [
   { id: 'p1', name: '净化网站广告水印', pattern: '(?:请收藏本站|笔趣阁|最新网址|wap\\.|www\\.).*?(?:\\r?\\n|$)', replacement: '', enabled: true, isRegex: true },
   { id: 'p2', name: '净化章节末尾催更求票', pattern: '（(?:本章未完|继续阅读|求推荐票|求月票|求打赏|加更).*?）', replacement: '', enabled: true, isRegex: true }
@@ -285,7 +285,7 @@ const paragraphs = computed(() => {
     .filter(p => p.length > 0)
 })
 
-// Legado Feature: Pure Frontend Web Speech API Audio Reader (TTS)
+// Feature: Web Speech API Audio Reader (TTS)
 const ttsActive = ref(false)
 const ttsPlaying = ref(false)
 const ttsIndex = ref(0)
@@ -383,7 +383,7 @@ function setTtsRate(rate: number) {
   if (ttsPlaying.value) speakCurrentParagraph()
 }
 
-// Legado Feature: Batch Offline Chapter Caching
+// Feature: Batch Offline Chapter Caching
 const cacheModalOpen = ref(false)
 const cachingBusy = ref(false)
 const cacheProgress = ref<{ total: number; cached: number }>({ total: 0, cached: 0 })
@@ -917,7 +917,7 @@ async function applyChangeSource(result: SearchResult) {
       url: result.url,
       currentChapterTitle: currentChapterName.value
     })
-    notice.value = `换源成功！已切至「${res.sourceName || '新书源'}」，章节已智能衔接。`
+    notice.value = `已切换至「${res.sourceName || '新书源'}」`
     changeSourceOpen.value = false
     setTimeout(() => { notice.value = '' }, 3500)
     // Reload book metadata and chapters
@@ -1250,7 +1250,7 @@ defineExpose({canLeave})
       </div>
 
       <div class="reader-header-title">
-        <strong>{{ book?.title || '阅读空间' }}</strong>
+        <strong>{{ book?.title || '阅读' }}</strong>
         <span>
           {{ currentChapterName || '正在载入书页…' }}
           <span v-if="isFromCache" class="offline-badge" style="font-size: 10px; padding: 1px 6px;">离线已缓存</span>
@@ -1265,7 +1265,7 @@ defineExpose({canLeave})
           :class="{ selected: changeSourceOpen }"
           @click="openChangeSourceModal"
           aria-label="一键换源"
-          title="为此书更换书源"
+          title="换源"
         >
           <Shuffle :size="16" />
           <span class="tool-label">换源</span>
@@ -1276,7 +1276,7 @@ defineExpose({canLeave})
           class="desktop-only"
           @click="toggleNightMode"
           :aria-label="isNightMode ? '切换到日间模式' : '切换到夜间护眼模式'"
-          :title="isNightMode ? '切换到日间模式' : '切换到夜间护眼模式'"
+          :title="isNightMode ? '日间模式' : '夜间模式'"
         >
           <Sun v-if="isNightMode" :size="17" />
           <Moon v-else :size="17" />
@@ -1309,7 +1309,7 @@ defineExpose({canLeave})
           :class="{ selected: cacheModalOpen }"
           @click="openCacheModal"
           aria-label="离线缓存"
-          title="批量离线缓存"
+          title="离线缓存"
         >
           <Download :size="17" />
         </button>
@@ -1320,7 +1320,7 @@ defineExpose({canLeave})
           :class="{ selected: ttsActive }"
           @click="ttsActive ? stopTts() : startTts(0)"
           aria-label="听书朗读"
-          title="听书朗读 (TTS)"
+          title="听书"
         >
           <Headphones :size="17" />
           <Headphones :size="17" />
@@ -1332,7 +1332,7 @@ defineExpose({canLeave})
           :href="getExportUrl(props.bookId)"
           target="_blank"
           aria-label="导出TXT"
-          title="导出全书已缓存章节为TXT文档"
+          title="导出TXT"
           style="text-decoration: none; padding: 0 10px; display: inline-flex; align-items: center; gap: 4px;"
         >
           <Download :size="16" />
@@ -1345,7 +1345,7 @@ defineExpose({canLeave})
           :aria-expanded="panel === 'settings'"
           @click="toggle('settings')"
           aria-label="阅读偏好设置"
-          title="阅读偏好设置"
+          title="设置"
         >
           <Settings2 :size="18" />
         </button>
@@ -1353,8 +1353,8 @@ defineExpose({canLeave})
         <!-- Fullscreen Button -->
         <button
           @click="toggleFullscreen"
-          :aria-label="isFullscreen ? '退出全屏' : '全屏沉浸阅读'"
-          :title="isFullscreen ? '退出全屏' : '全屏沉浸阅读'"
+          :aria-label="isFullscreen ? '退出全屏' : '全屏'"
+          :title="isFullscreen ? '退出全屏' : '全屏'"
         >
           <Minimize2 v-if="isFullscreen" :size="17" />
           <Maximize2 v-else :size="17" />
@@ -1398,7 +1398,7 @@ defineExpose({canLeave})
       <aside v-if="panel" class="reader-drawer" :class="{ 'is-toc': panel === 'toc' }" :aria-label="panel === 'toc' ? '章节目录' : panel === 'settings' ? '阅读设置' : '我的书签'">
         <div class="drawer-drag-bar" aria-hidden="true" @click="panel = ''"></div>
         <div class="drawer-header">
-          <h2>{{ panel === 'toc' ? '章节目录' : panel === 'settings' ? '阅读偏好' : '我的书签' }}</h2>
+          <h2>{{ panel === 'toc' ? '目录' : panel === 'settings' ? '设置' : '书签' }}</h2>
           <button class="icon-button" @click="panel = ''" aria-label="关闭面板"><X :size="18" /></button>
         </div>
         <div class="drawer-body">
@@ -1501,14 +1501,14 @@ defineExpose({canLeave})
                 <Sparkles :size="12" />
                 <span>排版实时预览</span>
               </div>
-              <p>行云流水，落纸如烟。文字在指尖静谧流淌，于方寸之间照见辽阔天地。</p>
+              
             </div>
 
             <!-- 第一层：高频排版核心调节 (常驻) -->
             <!-- Font Size -->
             <div class="setting-row">
               <div class="setting-header">
-                <span>正文字号</span>
+                <span>字号</span>
                 <div class="setting-stepper">
                   <button type="button" class="stepper-btn" @click="adjustFontSize(-1)">−</button>
                   <span style="font-weight: 600; min-width: 48px; text-align: center;">{{ prefs.fontSize }}px</span>
@@ -1521,7 +1521,7 @@ defineExpose({canLeave})
             <!-- Line Height -->
             <div class="setting-row">
               <div class="setting-header">
-                <span>行距倍率</span>
+                <span>行距</span>
                 <div class="setting-stepper">
                   <button type="button" class="stepper-btn" @click="adjustLineHeight(-0.1)">−</button>
                   <span style="font-weight: 600; min-width: 48px; text-align: center;">{{ prefs.lineHeight }}x</span>
@@ -1534,7 +1534,7 @@ defineExpose({canLeave})
             <!-- Page Navigation Mode Selection -->
             <div class="settings-section-title">
               <Columns :size="13" style="display: inline; margin-right: 4px;" />
-              翻页阅读方式
+              翻页方式
             </div>
             <div class="mode-selector-grid">
               <button
@@ -1544,8 +1544,8 @@ defineExpose({canLeave})
               >
                 <Columns :size="16" />
                 <div class="mode-text">
-                  <strong>左右滑动翻页</strong>
-                  <small>触控滑屏 · 点击两侧 · 翻页即换章</small>
+                  <strong>左右滑动</strong>
+                  
                 </div>
               </button>
               <button
@@ -1555,8 +1555,8 @@ defineExpose({canLeave})
               >
                 <Scroll :size="16" />
                 <div class="mode-text">
-                  <strong>上下连续滚动</strong>
-                  <small>垂直滑动 · 鼠标滚轮 · 触底换章</small>
+                  <strong>上下滚动</strong>
+                  
                 </div>
               </button>
             </div>
@@ -1564,7 +1564,7 @@ defineExpose({canLeave})
             <!-- Theme Color Swatches -->
             <div class="settings-section-title">
               <Palette :size="13" style="display: inline; margin-right: 4px;" />
-              阅读背景纸张 (含深邃夜读)
+              背景
             </div>
             <div class="theme-swatches">
               <div
@@ -1579,10 +1579,10 @@ defineExpose({canLeave})
               </div>
             </div>
 
-            <!-- 第二层：精选中文字体与简繁转换 -->
+            <!-- 第二层：字体选择与简繁转换 -->
             <div class="settings-section-title">
               <Type :size="13" style="display: inline; margin-right: 4px;" />
-              精选中文字体
+              字体
             </div>
             <div class="font-picker">
               <div
@@ -1594,7 +1594,7 @@ defineExpose({canLeave})
                 :title="f.desc"
               >
                 <strong>{{ f.name }}</strong>
-                <small style="display: block; font-size: 10px; opacity: 0.75;">{{ f.desc }}</small>
+                
               </div>
             </div>
 
@@ -1611,7 +1611,7 @@ defineExpose({canLeave})
               >
                 <div class="mode-text">
                   <strong>原文</strong>
-                  <small>书源原始字型</small>
+                  
                 </div>
               </button>
               <button
@@ -1621,7 +1621,7 @@ defineExpose({canLeave})
               >
                 <div class="mode-text">
                   <strong>简体</strong>
-                  <small>规范简体中文</small>
+                  
                 </div>
               </button>
               <button
@@ -1631,12 +1631,12 @@ defineExpose({canLeave})
               >
                 <div class="mode-text">
                   <strong>繁体</strong>
-                  <small>正体/繁体中文</small>
+                  
                 </div>
               </button>
             </div>
 
-            <!-- 第三层：更多排版细节 (折叠面板，功能06 & UI U06) -->
+            <!-- 高级排版面板 -->
             <button
               type="button"
               class="advanced-prefs-toggle"
@@ -1645,7 +1645,7 @@ defineExpose({canLeave})
             >
               <div class="toggle-title">
                 <Sliders :size="14" />
-                <span>更多排版与显示细节</span>
+                <span>高级排版</span>
               </div>
               <ChevronUp v-if="showAdvancedPrefs" :size="15" />
               <ChevronDown v-else :size="15" />
@@ -1681,16 +1681,14 @@ defineExpose({canLeave})
               <!-- First Line Indent & WakeLock Toggles -->
               <div class="toggle-option-card" @click="prefs.indent = !prefs.indent">
                 <div>
-                  <strong>首行缩进 2 字符</strong>
-                  <p>遵循中文出版物标准首行缩进排版</p>
+                  <strong>首行缩进</strong>
                 </div>
                 <input type="checkbox" :checked="prefs.indent" @click.stop="prefs.indent = !prefs.indent" />
               </div>
 
               <div class="toggle-option-card" @click="prefs.wakeLock = !prefs.wakeLock; prefs.wakeLock ? requestWakeLock() : releaseWakeLock()">
                 <div>
-                  <strong>沉浸阅读屏幕常亮</strong>
-                  <p>阅读中保持手机屏幕常亮，防止锁屏熄灭</p>
+                  <strong>屏幕常亮</strong>
                 </div>
                 <input type="checkbox" :checked="prefs.wakeLock" @click.stop="prefs.wakeLock = !prefs.wakeLock; prefs.wakeLock ? requestWakeLock() : releaseWakeLock()" />
               </div>
@@ -1698,8 +1696,7 @@ defineExpose({canLeave})
               <!-- Mobile / Responsive Viewport Mode -->
               <div class="toggle-option-card" @click="prefs.adaptiveWidth = !prefs.adaptiveWidth">
                 <div class="toggle-info">
-                  <strong>手机全宽自适应排版</strong>
-                  <p>针对小屏移动端自适应铺展，消除两侧白边</p>
+                  <strong>自适应宽度</strong>
                 </div>
                 <input type="checkbox" :checked="prefs.adaptiveWidth" @click.stop="prefs.adaptiveWidth = !prefs.adaptiveWidth" />
               </div>
@@ -1733,7 +1730,7 @@ defineExpose({canLeave})
                     @click="prefs.textAlign = 'left'"
                   >
                     <AlignLeft :size="15" />
-                    常规左对齐
+                    左对齐
                   </button>
                 </div>
               </div>
@@ -1743,7 +1740,7 @@ defineExpose({canLeave})
                 <div class="setting-header">
                   <span>
                     <Sparkles :size="13" style="display: inline; margin-right: 4px;" />
-                    页面过渡动效
+                    翻页动效
                   </span>
                 </div>
                 <div class="speed-picker">
@@ -1759,7 +1756,7 @@ defineExpose({canLeave})
                     @click="prefs.transitionSpeed = (s.id as any)"
                   >
                     <strong>{{ s.label }}</strong>
-                    <small style="display: block; opacity: 0.7;">{{ s.hint }}</small>
+                    
                   </div>
                 </div>
               </div>
@@ -1769,19 +1766,15 @@ defineExpose({canLeave})
             <div style="margin-top: 16px;">
               <button class="primary wide" :disabled="settingsBusy">
                 <Save :size="16" />
-                {{ settingsBusy ? '正在同步至云端…' : '同步阅读偏好' }}
+                {{ settingsBusy ? '保存中…' : '保存设置' }}
               </button>
-              <p class="fine-print text-center" style="margin-top: 8px;">
-                排版调整已在当前设备即时生效，点击可同步至账号云端。
-              </p>
+              
             </div>
             </form>
 
             <!-- Tab 2: Text Purification Rules -->
             <div v-else class="purify-settings-section">
-              <p class="fine-print" style="margin-bottom: 12px; line-height: 1.5;">
-                正文净化规则：支持关键词和正则表达式过滤，实时对章节内容生效，过滤广告和杂质。
-              </p>
+              
 
               <!-- Rules List -->
               <div class="purify-rules-list">
@@ -1822,17 +1815,17 @@ defineExpose({canLeave})
                 <div style="display: flex; flex-direction: column; gap: 8px;">
                   <input
                     v-model="newRuleName"
-                    placeholder="规则名称（选填，如：去除某某广告）"
+                    placeholder="规则名称（选填）"
                     style="font-size: 13px;"
                   />
                   <input
                     v-model="newRulePattern"
-                    placeholder="匹配模式（关键词或正则表达式）*"
+                    placeholder="匹配模式（关键词或正则）*"
                     style="font-size: 13px;"
                   />
                   <input
                     v-model="newRuleReplacement"
-                    placeholder="替换内容（选填，默认置空）"
+                    placeholder="替换内容（选填）"
                     style="font-size: 13px;"
                   />
                   <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 4px;">
@@ -1859,8 +1852,8 @@ defineExpose({canLeave})
           <template v-else>
             <form class="form-stack bookmark-form" @submit.prevent="addBookmark" style="margin-bottom: 24px;">
               <label>
-                在此页添加批注记号
-                <textarea v-model="note" rows="2" maxlength="1000" placeholder="写下你的感想或备忘（选填）…" />
+                添加批注
+                <textarea v-model="note" rows="2" maxlength="1000" placeholder="写下批注备忘（选填）…" />
               </label>
               <button class="primary wide" :disabled="bookmarkBusy || !content || chapterLoading">
                 <BookmarkPlus :size="16" />
@@ -1870,7 +1863,7 @@ defineExpose({canLeave})
 
             <div v-if="!bookmarks.length" class="empty" style="padding: 24px 0;">
               <BookmarkIcon :size="28" style="opacity: 0.3;" />
-              <p class="muted" style="margin-top: 8px;">还没有书签。值得回味的字句，记下来。</p>
+              <p class="muted" style="margin-top: 8px;">暂无书签</p>
             </div>
 
             <article v-for="mark in bookmarks" :key="mark.id" class="bookmark-item">
@@ -1904,9 +1897,9 @@ defineExpose({canLeave})
         <div class="modal-card change-source-dialog" @click.stop>
           <div class="modal-header">
             <div>
-              <h3>换源中心</h3>
+              <h3>换源</h3>
               <p class="muted" style="font-size: 13px; margin-top: 2px;">
-                当前书籍：「{{ book?.title }}」· 自动匹配章节进度
+                《{{ book?.title }}》
               </p>
             </div>
             <button class="icon-button" @click="changeSourceOpen = false" aria-label="关闭换源">
@@ -1918,13 +1911,13 @@ defineExpose({canLeave})
           <div class="modal-search-row">
             <input
               v-model="changeSourceQuery"
-              placeholder="搜索书籍关键词进行换源…"
+              placeholder="搜索关键词…"
               @keyup.enter="executeSearchSources"
             />
             <button class="primary" :disabled="changeSourceLoading" @click="executeSearchSources">
               <LoaderCircle v-if="changeSourceLoading" class="spin" :size="15" />
               <Search v-else :size="15" />
-              <span>重新搜索</span>
+              <span>搜索</span>
             </button>
           </div>
 
@@ -1937,11 +1930,11 @@ defineExpose({canLeave})
           <div class="change-source-body">
             <div v-if="changeSourceLoading" class="empty" style="padding: 40px 0;">
               <LoaderCircle class="spin" :size="28" />
-              <p class="muted" style="margin-top: 10px;">正在检索各大书源匹配书籍…</p>
+              <p class="muted" style="margin-top: 10px;">正在检索…</p>
             </div>
 
             <div v-else-if="!changeSourceResults.length" class="empty" style="padding: 40px 0;">
-              <p class="muted">未检索到其他可用书源结果，可修改关键词后重新搜索。</p>
+              <p class="muted">未检索到结果。</p>
             </div>
 
             <div v-else class="source-candidates-list">
@@ -1985,9 +1978,9 @@ defineExpose({canLeave})
         <div class="modal-card" style="max-width: 480px;" @click.stop>
           <div class="modal-header">
             <div>
-              <h3>批量离线缓存</h3>
+              <h3>离线缓存</h3>
               <p class="muted" style="font-size: 13px; margin-top: 2px;">
-                《{{ book?.title }}》· 下载正文到本地实现秒读
+                《{{ book?.title }}》
               </p>
             </div>
             <button class="icon-button" @click="cacheModalOpen = false" aria-label="关闭缓存弹窗">
@@ -2013,7 +2006,7 @@ defineExpose({canLeave})
             </div>
 
             <div class="settings-section-title" style="margin-bottom: 10px;">
-              从当前阅读位置开始批量缓存
+              从当前章起缓存
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px;">
               <button
@@ -2046,13 +2039,13 @@ defineExpose({canLeave})
                 :disabled="cachingBusy"
                 @click="triggerBatchCache(0)"
               >
-                缓存全书剩余
+                缓存剩余章节
               </button>
             </div>
 
             <div v-if="cachingBusy" class="empty" style="padding: 16px 0;">
               <LoaderCircle class="spin" :size="20" />
-              <p style="font-size: 13px; margin-top: 8px;">正在从书源批量下载缓存章节，请稍候…</p>
+              <p style="font-size: 13px; margin-top: 8px;">正在下载章节…</p>
             </div>
           </div>
         </div>
@@ -2063,12 +2056,12 @@ defineExpose({canLeave})
         ref="scroller"
         :class="['reading-scroll', `mode-${prefs.pageMode}`, { 'adaptive-fill': prefs.adaptiveWidth }]"
         tabindex="0"
-        aria-label="章节正文，可滚动或滑动翻页阅读"
+        aria-label="正文"
         @scroll.passive="onScroll"
       >
         <div v-if="loading || chapterLoading" class="empty" role="status" style="padding-top: 160px;">
           <LoaderCircle class="spin" :size="32" />
-          <p style="margin-top: 14px; font-family: var(--font-serif); letter-spacing: 1px;">正在铺开书页…</p>
+          <p style="margin-top: 14px; font-family: var(--font-serif); letter-spacing: 1px;">加载中…</p>
         </div>
 
         <article
@@ -2104,7 +2097,7 @@ defineExpose({canLeave})
           </div>
 
           <div v-if="!content.content" class="empty-chapter-fallback">
-            <p class="muted">此章节未能解析到正文内容，可能原书源规则变更或站点限流。</p>
+            <p class="muted">未解析到正文内容。</p>
             <div class="actions" style="justify-content: center; margin-top: 12px;">
               <button type="button" class="secondary" @click="openChapter(content.id, 0, false)">
                 <RefreshCw :size="15" /> 重新获取本章
@@ -2126,7 +2119,7 @@ defineExpose({canLeave})
             <button
               :disabled="index <= 0 || saving"
               @click="openChapter(chapters[index - 1].id)"
-              title="快捷键：键盘左方向键 ← 或滑屏向右"
+              title="上一章"
             >
               <ChevronLeft :size="18" />
               上一章
@@ -2135,7 +2128,7 @@ defineExpose({canLeave})
               class="primary"
               :disabled="index < 0 || index >= chapters.length - 1 || saving"
               @click="openChapter(chapters[index + 1].id)"
-              title="快捷键：键盘右方向键 → 或滑屏向左"
+              title="下一章"
             >
               下一章
               <ChevronRight :size="18" />
@@ -2148,14 +2141,12 @@ defineExpose({canLeave})
             class="touch-next-chapter-card"
             @click.stop="openChapter(chapters[index + 1].id)"
           >
-            <span>点击或继续翻页直达下一章</span>
+            <span>下一章</span>
             <strong>{{ chapters[index + 1]?.title }}</strong>
             <ChevronRight :size="16" />
           </div>
 
-          <p v-if="index === chapters.length - 1" class="fine-print text-center" style="margin-top: 36px;">
-            已读至全书最后一章，愿文字常伴身旁。
-          </p>
+          <p v-if="index === chapters.length - 1" class="fine-print text-center" style="margin-top: 36px;">已是最后一章</p>
         </article>
 
         <div v-else-if="!error" class="empty" style="padding-top: 140px;">
@@ -2283,7 +2274,7 @@ defineExpose({canLeave})
           :disabled="saving || !dirty || conflict || chapterLoading"
           @click="saveProgress"
           aria-label="立即同步进度"
-          :title="dirty ? '将当前阅读进度立即同步至云端' : '当前设备与云端进度已保持一致'"
+          :title="dirty ? '立即同步' : '已同步'"
         >
           <Save :size="18" />
           <span>{{ saving ? '同步中' : (dirty ? '立即同步' : '已同步') }}</span>

@@ -508,7 +508,7 @@ async function add(result: SearchResult) {
   error.value = ''
   const slowTimer = setTimeout(() => {
     if (adding.value === k) {
-      error.value = '正在解析书籍目录与章节，该书源响应较慢，请稍候…'
+      error.value = '正在加载目录…'
     }
   }, 10000)
   try {
@@ -533,7 +533,7 @@ async function readNow(result: SearchResult) {
   error.value = ''
   const slowTimer = setTimeout(() => {
     if (readingKey.value === k) {
-      error.value = '正在解析书籍目录并准备正文，该书源响应较慢，请稍候…'
+      error.value = '正在加载正文…'
     }
   }, 10000)
   try {
@@ -572,9 +572,7 @@ onUnmounted(() => {
 <template>
   <header class="page-header search-page-header">
     <div>
-      <span class="eyebrow">SEARCH NOVELS</span>
       <h1>搜索</h1>
-      <p>输入书名或作者，在你的个人书源中检索书籍。</p>
     </div>
     <Globe2 class="header-symbol" :size="38" :stroke-width="1.2" />
   </header>
@@ -590,7 +588,7 @@ onUnmounted(() => {
           v-model="keyword"
           required
           aria-label="搜索书名或作者"
-          placeholder="输入准确书名或作者名，例如：凡人修仙传…"
+          placeholder="搜索书名或作者…"
         />
         <button
           v-if="keyword && !searching"
@@ -610,7 +608,7 @@ onUnmounted(() => {
         @click="stopSearch"
       >
         <Square :size="16" />
-        <span>停止搜索，保留已找到结果</span>
+        <span>停止搜索</span>
       </button>
       <button
         v-else
@@ -633,16 +631,16 @@ onUnmounted(() => {
       >
         <div class="scope-header-left">
           <SlidersHorizontal :size="15" class="scope-header-icon" />
-          <span class="scope-header-title">搜索范围与检索设置</span>
+          <span class="scope-header-title">筛选</span>
           <span class="scope-summary-pill">
             {{ scopePresetLabel }} · {{ selected.length }}/{{ enabled.length }} 源
           </span>
           <span class="scope-summary-pill muted-pill">
-            <Clock :size="12" /> {{ timeoutSeconds === 0 ? '不限超时 · 完整等待' : `超时 ${timeoutSeconds}s` }}
+            <Clock :size="12" /> {{ timeoutSeconds === 0 ? '不限超时' : `${timeoutSeconds}s` }}
           </span>
         </div>
         <div class="scope-header-right">
-          <span>{{ scopeExpanded ? '收起' : '展开调整' }}</span>
+          <span>{{ scopeExpanded ? '收起' : '调整' }}</span>
           <ChevronUp v-if="scopeExpanded" :size="16" />
           <ChevronDown v-else :size="16" />
         </div>
@@ -650,7 +648,7 @@ onUnmounted(() => {
 
       <div v-show="scopeExpanded" class="scope-collapse-body">
         <div class="scope-setting-row">
-          <span class="scope-row-label">书源范围</span>
+          <span class="scope-row-label">范围</span>
           <div class="source-scope-presets">
             <button
               type="button"
@@ -658,7 +656,7 @@ onUnmounted(() => {
               :disabled="searching || !enabled.length"
               @click="applyPreset('all')"
             >
-              <Globe2 :size="13" class="scope-btn-icon" /> 全部可用 ({{ enabled.length }})
+              <Globe2 :size="13" class="scope-btn-icon" /> 全部 ({{ enabled.length }})
             </button>
             <button
               type="button"
@@ -666,7 +664,7 @@ onUnmounted(() => {
               :disabled="searching || !enabled.length"
               @click="applyPreset('top20')"
             >
-              <Zap :size="13" class="scope-btn-icon" /> 前 20 源
+              <Zap :size="13" class="scope-btn-icon" /> 前 20
             </button>
             <button
               type="button"
@@ -674,7 +672,7 @@ onUnmounted(() => {
               :disabled="searching || !enabled.length"
               @click="applyPreset('top50')"
             >
-              <Radio :size="13" class="scope-btn-icon" /> 前 50 源
+              <Radio :size="13" class="scope-btn-icon" /> 前 50
             </button>
 
             <select
@@ -698,7 +696,7 @@ onUnmounted(() => {
               @click="openPicker"
             >
               <SlidersHorizontal :size="14" />
-              自选书源
+              自定义
               <span v-if="activePreset === 'custom'" class="picker-count-tag">
                 {{ selected.length }}
               </span>
@@ -707,14 +705,14 @@ onUnmounted(() => {
         </div>
 
         <div class="scope-setting-row">
-          <span class="scope-row-label">单源超时</span>
+          <span class="scope-row-label">超时</span>
           <div class="source-scope-presets">
             <button
               v-for="opt in [
-                { val: 0, label: '0秒 · 完整等待' },
-                { val: 15, label: '15秒 · 推荐' },
-                { val: 25, label: '25秒 · 慢源兼容' },
-                { val: 35, label: '35秒 · 深度等待' }
+                { val: 0, label: '不限' },
+                { val: 15, label: '15s' },
+                { val: 25, label: '25s' },
+                { val: 35, label: '35s' }
               ]"
               :key="opt.val"
               type="button"
@@ -728,9 +726,9 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <p v-if="loading" role="status" class="scope-empty-tip muted">正在读取可用书源…</p>
+      <p v-if="loading" role="status" class="scope-empty-tip muted">加载中…</p>
       <p v-else-if="!enabled.length" class="scope-empty-tip muted">
-        暂无可用书源。请先前往 <a href="#/sources" class="accent-link">我的书源</a> 导入并启用属于你的书源。
+        暂无可用书源，请前往 <a href="#/sources" class="accent-link">书源管理</a> 导入。
       </p>
     </div>
   </form>
@@ -750,14 +748,14 @@ onUnmounted(() => {
         <span v-if="searching">
           正在检索《<strong>{{ searchedKeyword }}</strong>》
           <small class="muted">
-            · 已为你保留 <strong>{{ viewMode === 'aggregated' ? aggregatedWorks.length : results.length }}</strong> {{ viewMode === 'aggregated' ? '部作品' : '本书籍' }} ({{ completedSources }}/{{ totalSources }} 源 · {{ searchSeconds }}s)
+            ({{ completedSources }}/{{ totalSources }} 源 · {{ searchSeconds }}s · 已找到 {{ viewMode === "aggregated" ? aggregatedWorks.length : results.length }})
           </small>
         </span>
         <span v-else-if="stopped">
-          已为你保留找到的 <strong>{{ viewMode === 'aggregated' ? aggregatedWorks.length : results.length }}</strong> {{ viewMode === 'aggregated' ? '部作品' : '本书籍' }}（耗时 {{ searchSeconds }}s）
+          已停止：找到 {{ viewMode === "aggregated" ? aggregatedWorks.length : results.length }} 条结果（{{ searchSeconds }}s）
         </span>
         <span v-else>
-          检索完成：共找到 <strong>{{ viewMode === 'aggregated' ? aggregatedWorks.length : results.length }}</strong> {{ viewMode === 'aggregated' ? '部作品' : '本书籍' }}（耗时 {{ searchSeconds }}s）
+          完成：共 {{ viewMode === "aggregated" ? aggregatedWorks.length : results.length }} 条结果（{{ searchSeconds }}s）
         </span>
       </div>
       <div class="search-hud-actions">
@@ -768,7 +766,7 @@ onUnmounted(() => {
           @click="stopSearch"
         >
           <Square :size="13" />
-          停止搜索，保留已找到结果
+          停止搜索
         </button>
         <button
           type="button"
@@ -857,7 +855,7 @@ onUnmounted(() => {
   <div v-if="searching && results.length === 0" class="search-skeleton-container">
     <div class="search-skeleton-tip">
       <Radio class="spin" :size="16" style="color: var(--accent);" />
-      <span>正在检索《{{ searchedKeyword }}》，请稍候…</span>
+      <span>正在检索《{{ searchedKeyword }}》…</span>
     </div>
     <div class="search-skeleton-grid">
       <div v-for="n in 4" :key="n" class="skeleton-card">
@@ -883,7 +881,7 @@ onUnmounted(() => {
           搜索结果 <span class="count">{{ viewMode === 'aggregated' ? aggregatedWorks.length : results.length }}</span>
         </h2>
         <span class="muted">
-          {{ viewMode === 'aggregated' ? `共 ${aggregatedWorks.length} 部作品 · 已聚合各书源` : `共 ${results.length} 条各源检索结果` }}
+          {{ viewMode === 'aggregated' ? `共 ${aggregatedWorks.length} 部作品` : `共 ${results.length} 条结果` }}
         </span>
       </div>
 
@@ -892,19 +890,19 @@ onUnmounted(() => {
           type="button"
           :class="['mode-tab-btn', { active: viewMode === 'aggregated' }]"
           @click="viewMode = 'aggregated'; resultPage = 1"
-          title="将同名同作者书籍聚合展示，避免重复刷屏"
+          title="聚合展示"
         >
           <Layers :size="14" />
-          <span>作品聚合 ({{ aggregatedWorks.length }})</span>
+          <span>聚合 ({{ aggregatedWorks.length }})</span>
         </button>
         <button
           type="button"
           :class="['mode-tab-btn', { active: viewMode === 'flat' }]"
           @click="viewMode = 'flat'; resultPage = 1"
-          title="平铺展示每个书源的独立搜索结果"
+          title="平铺展示"
         >
           <ListFilter :size="14" />
-          <span>全部来源平铺 ({{ results.length }})</span>
+          <span>平铺 ({{ results.length }})</span>
         </button>
       </div>
 
@@ -936,10 +934,10 @@ onUnmounted(() => {
               <Sparkles :size="11" /> 精准匹配
             </span>
             <span class="tag source-count-tag">
-              共 {{ work.sources.length }} 个书源
+              {{ work.sources.length }} 个源
             </span>
             <span class="tag best-source-tag">
-              首推：{{ sources.find(s => s.id === work.primarySource.sourceId)?.name || work.primarySource.sourceName || '在线书源' }}
+              {{ sources.find(s => s.id === work.primarySource.sourceId)?.name || work.primarySource.sourceName || '在线书源' }}
             </span>
           </div>
           <h2>{{ work.title }}</h2>
@@ -966,7 +964,7 @@ onUnmounted(() => {
                 :href="`#/book/${id(added[key(work.primarySource)])}`"
               >
                 <Check :size="15" />
-                已在书架 · 目录
+                已加书架
               </a>
             </template>
             <template v-else>
@@ -997,7 +995,7 @@ onUnmounted(() => {
               @click="toggleWork(work.workKey)"
               :aria-expanded="expandedWorks[work.workKey]"
             >
-              <span>{{ expandedWorks[work.workKey] ? '收起书源' : `查看全部 ${work.sources.length} 个书源` }}</span>
+              <span>{{ expandedWorks[work.workKey] ? '收起' : `全部 ${work.sources.length} 个源` }}</span>
               <ChevronUp v-if="expandedWorks[work.workKey]" :size="14" />
               <ChevronDown v-else :size="14" />
             </button>
@@ -1006,7 +1004,7 @@ onUnmounted(() => {
           <!-- 聚合卡片内嵌各书源对比列表 -->
           <div v-show="expandedWorks[work.workKey]" class="nested-sources-drawer">
             <div class="nested-sources-header">
-              <span class="nested-title">可换读的书源版本（共 {{ work.sources.length }} 个）：</span>
+              <span class="nested-title">来源列表 ({{ work.sources.length }})：</span>
             </div>
             <div class="nested-sources-list">
               <div
@@ -1028,9 +1026,9 @@ onUnmounted(() => {
                 <div class="nested-source-actions">
                   <template v-if="added[key(srcResult)]">
                     <a :href="`#/read/${id(added[key(srcResult)])}`" class="button primary small-btn">
-                      <BookOpen :size="13" /> 读此源
+                      <BookOpen :size="13" /> 阅读
                     </a>
-                    <span class="added-badge">已加架</span>
+                    <span class="added-badge">已加书架</span>
                   </template>
                   <template v-else>
                     <button
@@ -1041,7 +1039,7 @@ onUnmounted(() => {
                     >
                       <LoaderCircle v-if="readingKey === key(srcResult)" class="spin" :size="13" />
                       <BookOpen v-else :size="13" />
-                      读此源
+                      阅读
                     </button>
                     <button
                       type="button"
@@ -1051,7 +1049,7 @@ onUnmounted(() => {
                     >
                       <LoaderCircle v-if="adding === key(srcResult)" class="spin" :size="13" />
                       <Plus v-else :size="13" />
-                      加架
+                      加书架
                     </button>
                   </template>
                 </div>
@@ -1103,7 +1101,7 @@ onUnmounted(() => {
                 :href="`#/book/${id(added[key(result)])}`"
               >
                 <Check :size="15" />
-                已在书架 · 目录
+                已加书架
               </a>
             </template>
             <template v-else>
@@ -1181,16 +1179,16 @@ onUnmounted(() => {
   <section v-else-if="searched && !searching && !error" class="empty">
     <Search :size="32" />
     <h2>未找到与《{{ searchedKeyword }}》匹配的书籍</h2>
-    <p>可尝试检查书名错别字，或前往「书源管理」添加更多可用书源。</p>
+    <p>未找到相关书籍。</p>
   </section>
 
-  <!-- 自选书源分页挑选器弹窗 (Modal) -->
+  <!-- 自定义分页挑选器弹窗 (Modal) -->
   <div v-if="showPickerModal" class="modal-backdrop" @click.self="showPickerModal = false">
     <div class="modal picker-modal panel" role="dialog" aria-modal="true" aria-labelledby="picker-modal-title">
       <div class="modal-header">
         <div class="modal-title-wrap">
           <SlidersHorizontal :size="18" style="color: var(--accent);" />
-          <h2 id="picker-modal-title">自定义选择搜索书源</h2>
+          <h2 id="picker-modal-title">选择书源</h2>
           <span class="picker-selected-badge">
             已勾选 {{ selected.length }} / {{ enabled.length }} 个源
           </span>
@@ -1230,10 +1228,10 @@ onUnmounted(() => {
             取消本页
           </button>
           <button type="button" class="text-button" @click="selectAllPickerSources">
-            全选所有
+            全选
           </button>
           <button type="button" class="text-button" @click="clearPickerSelection">
-            清空已选
+            清空
           </button>
         </div>
       </div>
@@ -1286,7 +1284,7 @@ onUnmounted(() => {
           取消
         </button>
         <button type="button" class="button primary" @click="confirmPicker">
-          确定并应用 (已选 {{ selected.length }} 个书源)
+          应用 (已选 {{ selected.length }})
         </button>
       </div>
     </div>
