@@ -230,6 +230,14 @@ func (s *Server) batchSources(w http.ResponseWriter, r *http.Request) error {
 }
 func canonicalSourceURL(raw string) string {
 	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		if strings.Contains(raw, ".") && !strings.HasPrefix(raw, "#") && !strings.ContainsAny(raw, " \t\r\n") {
+			raw = "http://" + raw
+		}
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return raw
@@ -285,8 +293,8 @@ func (s *Server) importSources(w http.ResponseWriter, r *http.Request) error {
 	} else {
 		entries = []json.RawMessage{body.Sources}
 	}
-	if len(entries) == 0 || len(entries) > 2000 {
-		return fail(400, "SOURCE_LIMIT", "单次导入 1–2000 个书源")
+	if len(entries) == 0 || len(entries) > 10000 {
+		return fail(400, "SOURCE_LIMIT", "单次导入 1–10000 个书源")
 	}
 
 	type dedupItem struct {
@@ -299,7 +307,8 @@ func (s *Server) importSources(w http.ResponseWriter, r *http.Request) error {
 	for i, entry := range entries {
 		v, e := parseSource(entry)
 		if e != nil {
-			return e
+			skippedInBatch++
+			continue
 		}
 		key := digest(v.URL)
 		if _, exists := dedupMap[key]; exists {
@@ -309,6 +318,10 @@ func (s *Server) importSources(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 		dedupMap[key] = dedupItem{source: v, order: i}
+	}
+
+	if len(dedupMap) == 0 {
+		return fail(400, "SOURCE_NONE_VALID", "未发现有效的合法书源（书源名称与合法HTTP/HTTPS地址为必填项）")
 	}
 
 	items := make([]dedupItem, 0, len(dedupMap))
@@ -626,6 +639,12 @@ func (s *Server) searchBooks(w http.ResponseWriter, r *http.Request) error {
 			items = filterAndRankResults(items, body.Keyword)
 			if len(items) > 100 {
 				items = items[:100]
+				items = items[:100]
+			}
+			for i := range items {
+				if items[i].SourceName == "" {
+					items[i].SourceName = v.Name
+				}
 			}
 			results = append(results, items...)
 		}(src)
@@ -753,6 +772,12 @@ func (s *Server) searchBooksStream(w http.ResponseWriter, r *http.Request) error
 			items = filterAndRankResults(items, body.Keyword)
 			if len(items) > 100 {
 				items = items[:100]
+				items = items[:100]
+			}
+			for i := range items {
+				if items[i].SourceName == "" {
+					items[i].SourceName = v.Name
+				}
 			}
 			totalFound += len(items)
 			sendSSE(w, flusher, "progress", map[string]any{

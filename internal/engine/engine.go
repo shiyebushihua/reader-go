@@ -9,29 +9,37 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/PuerkitoBio/goquery"
 )
+
 
 type Source struct {
 	ID   string
 	Rule json.RawMessage
 }
+
 type Result struct {
-	SourceID string `json:"sourceId"`
-	URL      string `json:"url"`
-	Title    string `json:"title"`
-	Author   string `json:"author"`
-	Cover    string `json:"cover"`
+	SourceID      string `json:"sourceId"`
+	URL           string `json:"url"`
+	Title         string `json:"title"`
+	Author        string `json:"author"`
+	Cover         string `json:"cover"`
 	Intro         string `json:"intro"`
 	LatestChapter string `json:"latestChapter,omitempty"`
+	SourceName    string `json:"sourceName,omitempty"`
 }
+
 type Chapter struct {
 	Title string
 	URL   string
 }
+
 type Detail struct {
 	Title, Author, Cover, Intro, URL string
 	Chapters                         []Chapter
 }
+
 type sourceRules struct {
 	BookSourceURL string            `json:"bookSourceUrl"`
 	SearchURL     string            `json:"searchUrl"`
@@ -44,51 +52,39 @@ type sourceRules struct {
 
 func parseSource(s Source) (sourceRules, error) {
 	var r sourceRules
-	if len(s.Rule) > 1<<20 {
-		return r, fmt.Errorf("source rules exceed 1 MiB")
+	if len(s.Rule) > 5<<20 {
+		return r, fmt.Errorf("source rules exceed 5 MiB")
 	}
 	if err := json.Unmarshal(s.Rule, &r); err != nil {
-		return r, fmt.Errorf("invalid source rules (rule values must be strings): %w", err)
+		return r, fmt.Errorf("invalid source rules: %w", err)
 	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(s.Rule, &raw); err != nil {
-		return r, err
-	}
-	for _, key := range []string{"jsLib", "loginUrl", "loginUi", "loginCheckJs", "coverDecodeJs", "bookUrlPattern"} {
-		if v := raw[key]; len(v) > 0 && string(v) != "null" && string(v) != `""` {
-			return r, fmt.Errorf("unsupported source option %q", key)
-		}
-	}
+
 	for _, group := range []struct {
 		name    string
 		rules   map[string]string
 		allowed string
 	}{
-		{"ruleSearch", r.Search, " bookList name author bookUrl coverUrl intro kind lastChapter wordCount checkKeyWord updateTime "},
-		{"ruleBookInfo", r.Info, " init name author coverUrl intro tocUrl kind lastChapter wordCount updateTime canReName downloadUrl "},
-		{"ruleToc", r.Toc, " chapterList chapterName chapterUrl nextTocUrl updateTime formatJs "},
-		{"ruleContent", r.Content, " content nextContentUrl replaceRegex imageStyle title sourceRegex "},
+		{"ruleSearch", r.Search, " bookList name author bookUrl coverUrl intro kind lastChapter latestChapter newChapter updateChapter lastUpdate wordCount checkKeyWord updateTime "},
+		{"ruleBookInfo", r.Info, " init name author coverUrl intro tocUrl kind lastChapter latestChapter newChapter updateChapter lastUpdate wordCount updateTime canReName downloadUrl "},
+		{"ruleToc", r.Toc, " chapterList chapterName chapterUrl nextTocUrl updateTime formatJs isVolume "},
+		{"ruleContent", r.Content, " content nextContentUrl replaceRegex imageStyle title sourceRegex webView "},
 	} {
 		for key, rule := range group.rules {
-			// Display-only metadata is not evaluated in this version. Ignore it rather
-			// than blocking otherwise usable search/reading rules.
-			if (group.name == "ruleSearch" || group.name == "ruleBookInfo") && strings.Contains(" kind lastChapter wordCount checkKeyWord updateTime canReName downloadUrl ", " "+key+" ") {
+			if strings.TrimSpace(rule) == "" {
 				continue
 			}
-			if group.name == "ruleToc" && strings.Contains(" updateTime formatJs ", " "+key+" ") {
+			// Legado metadata fields that do not block parsing
+			if (group.name == "ruleSearch" || group.name == "ruleBookInfo") && strings.Contains(" kind lastChapter latestChapter newChapter updateChapter lastUpdate wordCount checkKeyWord updateTime canReName downloadUrl ", " "+key+" ") {
 				continue
 			}
-			if group.name == "ruleContent" && strings.Contains(" imageStyle title sourceRegex ", " "+key+" ") {
+			if group.name == "ruleToc" && strings.Contains(" updateTime formatJs isVolume ", " "+key+" ") {
+				continue
+			}
+			if group.name == "ruleContent" && strings.Contains(" imageStyle title sourceRegex webView ", " "+key+" ") {
 				continue
 			}
 			if key == "replaceRegex" {
 				continue
-			}
-			if strings.TrimSpace(rule) == "" {
-				continue
-			}
-			if !strings.Contains(group.allowed, " "+key+" ") {
-				return r, fmt.Errorf("unsupported %s field %q", group.name, key)
 			}
 			if err := supported(rule); err != nil {
 				return r, fmt.Errorf("%s.%s: %w", group.name, key, err)
@@ -107,6 +103,7 @@ func parseSource(s Source) (sourceRules, error) {
 	}
 	return r, nil
 }
+
 func headers(raw json.RawMessage) (map[string]string, error) {
 	out := map[string]string{}
 	if len(raw) == 0 || string(raw) == "null" {
@@ -121,38 +118,48 @@ func headers(raw json.RawMessage) (map[string]string, error) {
 		if s == "" {
 			return out, nil
 		}
-		if err := supported(s); err != nil {
-			return nil, err
+		if err := json.Unmarshal([]byte(s), &out); err == nil {
+			if out == nil {
+				out = map[string]string{}
+			}
+			return out, nil
 		}
-		raw = json.RawMessage(s)
+		for _, line := range strings.Split(s, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("invalid header line")
+			}
+			out[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+		return out, nil
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("headers must be a JSON string map: %w", err)
-	}
-	if out == nil {
-		out = map[string]string{}
+		return nil, err
 	}
 	return out, nil
 }
+
 func resolve(base, ref string) (string, error) {
-	if strings.ContainsAny(ref, "\r\n") {
-		return "", fmt.Errorf("URL rule returned multiple values")
-	}
-	u, err := url.Parse(strings.TrimSpace(ref))
+	bu, err := url.Parse(base)
 	if err != nil {
 		return "", err
 	}
-	b, err := url.Parse(base)
+	ru, err := url.Parse(ref)
 	if err != nil {
 		return "", err
 	}
-	u = b.ResolveReference(u)
+	u := bu.ResolveReference(ru)
 	u.Fragment = ""
 	if err = validURL(u); err != nil {
 		return "", err
 	}
 	return u.String(), nil
 }
+
 var unquotedKeyRegex = regexp.MustCompile(`(?m)([{,]\s*)([a-zA-Z_][a-zA-Z0-9_-]*)\s*:`)
 var trailingCommaRegex = regexp.MustCompile(`,\s*}`)
 
@@ -164,15 +171,15 @@ func normalizeJSONOptions(raw string) string {
 	if json.Valid([]byte(raw)) {
 		return raw
 	}
-	// Legado allows unquoted keys like {method:"post",body:"..."}
 	res := unquotedKeyRegex.ReplaceAllString(raw, `$1"$2":`)
 	res = trailingCommaRegex.ReplaceAllString(res, "}")
 	return res
 }
 
 func template(text, key string, page int, escaped bool) (string, error) {
+	escapedKey := key
 	if escaped {
-		key = url.QueryEscape(key)
+		escapedKey = url.QueryEscape(key)
 	}
 	prevPage := strconv.Itoa(page - 1)
 	if page <= 1 {
@@ -180,18 +187,34 @@ func template(text, key string, page int, escaped bool) (string, error) {
 	}
 	nextPage := strconv.Itoa(page + 1)
 	text = strings.NewReplacer(
-		"{{key}}", key,
+		"{{key}}", escapedKey,
 		"{{page}}", strconv.Itoa(page),
-		"{key}", key,
+		"{key}", escapedKey,
 		"{page}", strconv.Itoa(page),
 		"{{page-1}}", prevPage,
 		"{{page+1}}", nextPage,
 	).Replace(text)
-	if err := supported(text); err != nil {
-		return "", err
+
+	// If URL template contains JS, evaluate it
+	if strings.Contains(text, "<js>") || strings.Contains(text, "@js:") {
+		mainText, jsCode := SplitJSBlock(text)
+		if jsCode != "" {
+			env := JSEnv{
+				Result: mainText,
+				Src:    mainText,
+				Key:    key,
+				Page:   page,
+			}
+			val, err := RunLegadoJS(jsCode, env)
+			if err == nil && val != nil {
+				text = fmt.Sprintf("%v", val)
+			}
+		}
 	}
+
 	return text, nil
 }
+
 func makeRequest(r sourceRules, base, raw, key string, page int) (requestSpec, error) {
 	spec := requestSpec{Method: "GET"}
 	var err error
@@ -200,7 +223,6 @@ func makeRequest(r sourceRules, base, raw, key string, page int) (requestSpec, e
 		return spec, err
 	}
 	raw = strings.TrimSpace(raw)
-	// Legado URL,JSON-options syntax; the delimiter must precede a JSON object.
 	options := ""
 	if i := strings.Index(raw, ",{"); i >= 0 {
 		options = raw[i+1:]
@@ -221,7 +243,6 @@ func makeRequest(r sourceRules, base, raw, key string, page int) (requestSpec, e
 		normalized := normalizeJSONOptions(options)
 		var opts map[string]json.RawMessage
 		if err = json.Unmarshal([]byte(normalized), &opts); err != nil {
-			// Fallback: extract method, charset, body via regex if relaxed unmarshal still fails
 			if m := regexp.MustCompile(`(?i)["']?method["']?\s*:\s*["']?([a-zA-Z]+)`).FindStringSubmatch(options); len(m) > 1 {
 				spec.Method = strings.ToUpper(m[1])
 			}
@@ -240,6 +261,7 @@ func makeRequest(r sourceRules, base, raw, key string, page int) (requestSpec, e
 				switch strings.ToLower(k) {
 				case "method":
 					_ = json.Unmarshal(v, &spec.Method)
+					spec.Method = strings.ToUpper(strings.TrimSpace(spec.Method))
 				case "charset":
 					_ = json.Unmarshal(v, &spec.Charset)
 				case "headers", "header":
@@ -249,6 +271,19 @@ func makeRequest(r sourceRules, base, raw, key string, page int) (requestSpec, e
 							spec.Headers[hk] = val
 						}
 					}
+				case "cookie", "cookies":
+					var cStr string
+					if err := json.Unmarshal(v, &cStr); err == nil && cStr != "" {
+						if existing, ok := spec.Headers["Cookie"]; ok && existing != "" {
+							spec.Headers["Cookie"] = existing + "; " + cStr
+						} else {
+							spec.Headers["Cookie"] = cStr
+						}
+					}
+				case "webview":
+					if _, hasUA := spec.Headers["User-Agent"]; !hasUA {
+						spec.Headers["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+					}
 				case "body":
 					if len(v) > 0 && v[0] == '"' {
 						_ = json.Unmarshal(v, &spec.Body)
@@ -256,101 +291,108 @@ func makeRequest(r sourceRules, base, raw, key string, page int) (requestSpec, e
 						spec.Body = string(v)
 					}
 				default:
-					return spec, fmt.Errorf("unsupported HTTP option %q", k)
+					// Gracefully ignore harmless options like webView, retry, cacheTime
+				}
 			}
 		}
 	}
-		// Body strings use form escaping, matching conventional Legado search POST forms.
+	if spec.Body != "" {
 		spec.Body, err = template(spec.Body, key, page, true)
 		if err != nil {
 			return spec, err
 		}
 	}
-	for k, v := range spec.Headers {
-		v, err = template(v, key, page, false)
-		if err != nil {
-			return spec, err
-		}
-		spec.Headers[k] = v
-	}
-	if spec.Method == "" {
-		spec.Method = "GET"
-	} else {
-		spec.Method = strings.ToUpper(spec.Method)
-	}
 	return spec, nil
 }
+
 func (e *Engine) load(ctx context.Context, r sourceRules, base, raw string) (value, string, error) {
 	spec, err := makeRequest(r, base, raw, "", 1)
 	if err != nil {
 		return value{}, "", err
 	}
-	p, err := e.fetch(ctx, spec)
+	res, err := e.fetch(ctx, spec)
 	if err != nil {
 		return value{}, "", err
 	}
-	v, err := document(p.Body)
-	return v, p.URL, err
-}
-func fields(v value, rules map[string]string, names ...string) ([]string, error) {
-	out := make([]string, len(names))
-	for i, k := range names {
-		s, err := extract(v, rules[k])
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", k, err)
-		}
-		out[i] = s
+	doc, err := document(res.Body)
+	if err != nil {
+		return value{}, "", err
 	}
-	return out, nil
+	doc.env = &JSEnv{BaseURL: res.URL, Src: string(res.Body)}
+	return doc, res.URL, nil
 }
-func (e *Engine) Search(ctx context.Context, s Source, keyword string) ([]Result, error) {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+
+var cleanChapterPrefixRegex = regexp.MustCompile(`^(最新章节[：:\s]*|更新[：:\s]*|最新[：:\s]*|正文[：:\s]*)`)
+
+func cleanChapterTitle(t string) string {
+	t = strings.TrimSpace(t)
+	t = cleanChapterPrefixRegex.ReplaceAllString(t, "")
+	return strings.TrimSpace(t)
+}
+
+var sniffChapterRegex = regexp.MustCompile(`(?:最新章节|最新|更新到|最新更新)[：:\s]+(第?[0-9零一二两三四五六七八九十百千万]+[章回节集部卷][^\r\n]{0,30}|[^\r\n]{1,30})`)
+
+func sniffLatestFromIntro(intro string) (string, string) {
+	m := sniffChapterRegex.FindStringSubmatch(intro)
+	if len(m) > 1 {
+		latest := cleanChapterTitle(m[1])
+		cleanIntro := sniffChapterRegex.ReplaceAllString(intro, "")
+		return latest, strings.TrimSpace(cleanIntro)
+	}
+	return "", intro
+}
+
+func (e *Engine) Search(ctx context.Context, s Source, keyword string, pages ...int) ([]Result, error) {
+	page := 1
+	if len(pages) > 0 && pages[0] > 0 {
+		page = pages[0]
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	r, err := parseSource(s)
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(keyword) == "" || len(keyword) > 1024 {
-		return nil, fmt.Errorf("search keyword must be 1–1024 bytes")
-	}
 	if r.SearchURL == "" {
-		return nil, fmt.Errorf("source has no searchUrl")
+		return nil, fmt.Errorf("source missing searchUrl")
 	}
-	spec, err := makeRequest(r, r.BookSourceURL, r.SearchURL, keyword, 1)
+	spec, err := makeRequest(r, r.BookSourceURL, r.SearchURL, keyword, page)
 	if err != nil {
 		return nil, err
 	}
-	p, err := e.fetch(ctx, spec)
+	res, err := e.fetch(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
-	doc, err := document(p.Body)
+	body, finalURL := res.Body, res.URL
+	doc, err := document(body)
 	if err != nil {
 		return nil, err
 	}
-	list, err := elements(doc, r.Search["bookList"])
+	doc.env = &JSEnv{BaseURL: finalURL, Src: string(body), Key: keyword, Page: page}
+
+	items, err := elements(doc, r.Search["bookList"])
 	if err != nil {
-		return nil, fmt.Errorf("bookList: %w", err)
+		return nil, err
 	}
-	if len(list) > 500 {
-		return nil, fmt.Errorf("search exceeds 500 results")
-	}
-	out := make([]Result, 0, len(list))
+	out := make([]Result, 0, len(items))
 	seen := map[string]bool{}
-	for _, v := range list {
-		if err = ctx.Err(); err != nil {
+	for _, v := range items {
+		v.env = doc.env
+		var f [6]string
+		for i, k := range []string{"name", "author", "bookUrl", "coverUrl", "intro", "lastChapter"} {
+			rule := r.Search[k]
+			if rule != "" {
+				s, err := extract(v, rule)
+				if err != nil {
+					return nil, err
+				}
+				f[i] = s
+			}
+		}
+		bookURL, err := resolve(finalURL, f[2])
+		if err != nil {
 			return nil, err
-		}
-		f, er := fields(v, r.Search, "name", "author", "bookUrl", "coverUrl", "intro", "lastChapter")
-		if er != nil {
-			return nil, er
-		}
-		if f[0] == "" || f[2] == "" {
-			continue
-		}
-		bookURL, er := resolve(p.URL, f[2])
-		if er != nil {
-			return nil, er
 		}
 		if seen[bookURL] {
 			continue
@@ -358,19 +400,40 @@ func (e *Engine) Search(ctx context.Context, s Source, keyword string) ([]Result
 		seen[bookURL] = true
 		cover := ""
 		if f[3] != "" {
-			cover, er = resolve(p.URL, f[3])
-			if er != nil {
-				return nil, er
+			cover, err = resolve(finalURL, f[3])
+			if err != nil {
+				return nil, err
 			}
 		}
 		latest := ""
-		if len(f) > 5 {
+		if len(f) > 5 && strings.TrimSpace(f[5]) != "" {
 			latest = strings.TrimSpace(f[5])
 		}
-		out = append(out, Result{SourceID: s.ID, URL: bookURL, Title: f[0], Author: f[1], Cover: cover, Intro: f[4], LatestChapter: latest})
+		if latest == "" {
+			for _, lk := range []string{"latestChapter", "newChapter", "updateChapter", "lastUpdate"} {
+				if rule, ok := r.Search[lk]; ok && strings.TrimSpace(rule) != "" {
+					if lVal, lErr := extract(v, rule); lErr == nil && strings.TrimSpace(lVal) != "" {
+						latest = strings.TrimSpace(lVal)
+						break
+					}
+				}
+			}
+		}
+		if latest != "" {
+			latest = cleanChapterTitle(latest)
+		}
+		introText := f[4]
+		if latest == "" && introText != "" {
+			if snipLatest, newIntro := sniffLatestFromIntro(introText); snipLatest != "" {
+				latest = snipLatest
+				introText = newIntro
+			}
+		}
+		out = append(out, Result{SourceID: s.ID, URL: bookURL, Title: f[0], Author: f[1], Cover: cover, Intro: introText, LatestChapter: latest})
 	}
 	return out, nil
 }
+
 func (e *Engine) Details(ctx context.Context, s Source, rawURL string) (Detail, error) {
 	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
@@ -394,162 +457,261 @@ func (e *Engine) Details(ctx context.Context, s Source, rawURL string) (Detail, 
 		}
 		doc = vs[0]
 	}
-	f, err := fields(doc, r.Info, "name", "author", "coverUrl", "intro", "tocUrl")
-	if err != nil {
-		return d, err
+	var f [4]string
+	for i, k := range []string{"name", "author", "coverUrl", "intro"} {
+		rule := r.Info[k]
+		if rule != "" {
+			s, er := extract(doc, rule)
+			if er != nil {
+				return d, er
+			}
+			f[i] = s
+		}
 	}
 	d.Title = f[0]
 	d.Author = f[1]
-	d.Intro = f[3]
 	if f[2] != "" {
 		d.Cover, err = resolve(base, f[2])
 		if err != nil {
 			return d, err
 		}
 	}
-	if f[4] != "" {
-		doc, base, err = e.load(ctx, r, base, f[4])
-		if err != nil {
-			return d, err
-		}
-	} else if r.Info["init"] != "" {
-		doc, base, err = e.load(ctx, r, r.BookSourceURL, rawURL)
-		if err != nil {
-			return d, err
-		}
-	}
-	seenPages := map[string]bool{}
-	seenChapters := map[string]bool{}
-	d.Chapters = []Chapter{}
-	for page := 0; ; page++ {
-		if err = ctx.Err(); err != nil {
-			return d, err
-		}
-		if seenPages[base] {
-			break
-		}
-		const maxTocPages = 200
-		if page >= maxTocPages {
-			return d, fmt.Errorf("TOC pagination exceeds %d pages", maxTocPages)
-		}
-		seenPages[base] = true
-		list, er := elements(doc, r.Toc["chapterList"])
-		if er != nil {
-			return d, fmt.Errorf("chapterList: %w", er)
-		}
-		for _, v := range list {
-			f, er := fields(v, r.Toc, "chapterName", "chapterUrl")
-			if er != nil {
-				return d, er
-			}
-			if f[0] == "" || f[1] == "" {
-				continue
-			}
-			u, er := resolve(base, f[1])
-			if er != nil {
-				return d, er
-			}
-			if !seenChapters[u] {
-				seenChapters[u] = true
-				d.Chapters = append(d.Chapters, Chapter{f[0], u})
-				if len(d.Chapters) > 20000 {
-					return d, fmt.Errorf("TOC exceeds 20000 chapters")
-				}
-			}
-		}
-		next, er := extract(doc, r.Toc["nextTocUrl"])
+	d.Intro = f[3]
+	tocURL := base
+	if rule := r.Info["tocUrl"]; rule != "" {
+		u, er := extract(doc, rule)
 		if er != nil {
 			return d, er
 		}
-		if next == "" {
-			break
-		}
-		u, er := resolve(base, next)
-		if er != nil {
-			return d, er
-		}
-		if seenPages[u] {
-			break
-		}
-		if page >= maxTocPages-1 {
-			return d, fmt.Errorf("TOC pagination exceeds %d pages", maxTocPages)
-		}
-		doc, base, err = e.load(ctx, r, base, next)
-		if err != nil {
-			return d, err
+		if u != "" {
+			tocURL, err = resolve(base, u)
+			if err != nil {
+				return d, err
+			}
 		}
 	}
-	if len(d.Chapters) == 0 {
-		return d, fmt.Errorf("no chapters matched source rules")
-	}
-	return d, nil
+	d.Chapters, err = e.TOC(ctx, s, tocURL)
+	return d, err
 }
-func (e *Engine) Content(ctx context.Context, s Source, rawURL string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+
+func (e *Engine) TOC(ctx context.Context, s Source, rawURL string) ([]Chapter, error) {
+	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
+	defer cancel()
+	r, err := parseSource(s)
+	if err != nil {
+		return nil, err
+	}
+	currentURL := rawURL
+	visited := map[string]bool{}
+	var allChapters []Chapter
+	seenChapterURLs := map[string]bool{}
+
+	maxPages := 200
+	for p := 0; p < maxPages; p++ {
+		if currentURL == "" || visited[currentURL] {
+			break
+		}
+		visited[currentURL] = true
+
+		doc, base, err := e.load(ctx, r, r.BookSourceURL, currentURL)
+		if err != nil {
+			if len(allChapters) > 0 {
+				break
+			}
+			return nil, err
+		}
+		items, err := elements(doc, r.Toc["chapterList"])
+		if err != nil {
+			if len(allChapters) > 0 {
+				break
+			}
+			return nil, err
+		}
+		for _, v := range items {
+			name, err := extract(v, r.Toc["chapterName"])
+			if err != nil {
+				return nil, err
+			}
+			u, err := extract(v, r.Toc["chapterUrl"])
+			if err != nil {
+				return nil, err
+			}
+			absURL, err := resolve(base, u)
+			if err != nil {
+				return nil, err
+			}
+			if !seenChapterURLs[absURL] {
+				seenChapterURLs[absURL] = true
+				allChapters = append(allChapters, Chapter{Title: name, URL: absURL})
+			}
+		}
+
+		nextRule := r.Toc["nextTocUrl"]
+		if nextRule == "" {
+			break
+		}
+		next, err := extract(doc, nextRule)
+		if err != nil || next == "" {
+			break
+		}
+		absNext, err := resolve(base, next)
+		if err != nil || absNext == currentURL || visited[absNext] {
+			break
+		}
+		currentURL = absNext
+	}
+	return allChapters, nil
+}
+
+func (e *Engine) Content(ctx context.Context, s Source, rawURL string, nextChapterURLs ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	r, err := parseSource(s)
 	if err != nil {
 		return "", err
 	}
-	if r.Content["content"] == "" {
-		return "", fmt.Errorf("source has no content rule")
-	}
-	if r.Content["webJs"] != "" || r.Content["sourceRegex"] != "" {
-		return "", fmt.Errorf("unsupported content webJs/sourceRegex")
-	}
-	seen := map[string]bool{}
-	chunks := map[string]bool{}
-	var out []string
-	total := 0
-	base := r.BookSourceURL
-	next := rawURL
-	for page := 0; next != ""; page++ {
-		if page >= 10 {
-			return "", fmt.Errorf("content pagination exceeds 10 pages")
+
+	var normNextChapterURL string
+	if len(nextChapterURLs) > 0 && nextChapterURLs[0] != "" {
+		if abs, err := resolve(r.BookSourceURL, nextChapterURLs[0]); err == nil {
+			normNextChapterURL = strings.TrimRight(abs, "/")
+		} else {
+			normNextChapterURL = strings.TrimRight(nextChapterURLs[0], "/")
 		}
-		doc, final, er := e.load(ctx, r, base, next)
-		if er != nil {
-			return "", er
-		}
-		if seen[final] {
+	}
+
+	currentURL := rawURL
+	visited := map[string]bool{}
+	var fullText strings.Builder
+	var lastPageText string
+	pages := 0
+	const maxPages = 50
+
+	for {
+		if currentURL == "" || visited[currentURL] {
 			break
 		}
-		seen[final] = true
-		base = final
-		text, er := extract(doc, r.Content["content"])
-		if er != nil {
-			return "", er
+		pages++
+		if pages > maxPages {
+			return "", fmt.Errorf("content pagination exceeded %d pages", maxPages)
 		}
-		if text == "" {
-			return "", fmt.Errorf("content rule matched no text")
+		visited[currentURL] = true
+
+		doc, base, err := e.load(ctx, r, r.BookSourceURL, currentURL)
+		if err != nil {
+			return "", err
 		}
-		if replace := r.Content["replaceRegex"]; replace != "" {
-			text, er = cleanContent(text, replace)
-			if er != nil {
-				return "", er
+		text, err := extract(doc, r.Content["content"])
+		if err != nil {
+			return "", err
+		}
+		text, err = cleanContent(text, r.Content["replaceRegex"])
+		if err != nil {
+			return "", err
+		}
+
+		trimmedText := strings.TrimSpace(text)
+		if trimmedText != "" && trimmedText == lastPageText {
+			break
+		}
+		lastPageText = trimmedText
+
+		if trimmedText != "" {
+			if fullText.Len() > 0 {
+				fullText.WriteString("\n\n")
 			}
+			fullText.WriteString(trimmedText)
 		}
-		if !chunks[text] {
-			total += len(text)
-			if total > 16<<20 {
-				return "", fmt.Errorf("chapter content exceeds 16 MiB")
-			}
-			chunks[text] = true
-			out = append(out, text)
+
+		nextURL := e.findNextContentURL(doc, base, r.Content["nextContentUrl"], currentURL, normNextChapterURL)
+		if nextURL == "" || visited[nextURL] {
+			break
 		}
-		next, er = extract(doc, r.Content["nextContentUrl"])
-		if er != nil {
-			return "", er
+		if normNextChapterURL != "" && strings.TrimRight(nextURL, "/") == normNextChapterURL {
+			break
 		}
-		if next != "" {
-			next, er = resolve(base, next)
-			if er != nil {
-				return "", er
-			}
-			if seen[next] {
-				break
+		currentURL = nextURL
+	}
+	return fullText.String(), nil
+}
+
+func (e *Engine) findNextContentURL(doc value, base, nextRule, currentURL, normNextChapterURL string) string {
+	normCurr := strings.TrimRight(currentURL, "/")
+
+	// 1. 书源自带规则优先
+	cleanNextRule := strings.TrimSpace(nextRule)
+	if cleanNextRule != "" && !strings.Contains(cleanNextRule, "???") {
+		if next, err := extract(doc, cleanNextRule); err == nil && strings.TrimSpace(next) != "" {
+			if absNext, err := resolve(base, strings.TrimSpace(next)); err == nil && absNext != "" {
+				normNext := strings.TrimRight(absNext, "/")
+				if normNext != normCurr {
+					if normNextChapterURL != "" && normNext == normNextChapterURL {
+						return ""
+					}
+					return absNext
+				}
 			}
 		}
 	}
-	return strings.Join(out, "\n\n"), nil
+
+	// 2. 启发式 Fallback：当规则未配置、失效或未提取到下一页时，智能探测 DOM 中的分页链接
+	if doc.node != nil {
+		var candidate string
+		doc.node.Find("a").EachWithBreak(func(_ int, s *goquery.Selection) bool {
+			href, exists := s.Attr("href")
+			if !exists {
+				return true
+			}
+			href = strings.TrimSpace(href)
+			if href == "" || href == "#" || strings.HasPrefix(strings.ToLower(href), "javascript:") {
+				return true
+			}
+
+			txt := strings.TrimSpace(s.Text())
+			// 严格排除章节、上页、目录等非子分页链接
+			if strings.Contains(txt, "下一章") || strings.Contains(txt, "下章") ||
+				strings.Contains(txt, "上一页") || strings.Contains(txt, "上页") ||
+				strings.Contains(txt, "上一章") || strings.Contains(txt, "上章") ||
+				strings.Contains(txt, "下一卷") || strings.Contains(txt, "下卷") ||
+				strings.Contains(txt, "下一篇") || strings.Contains(txt, "下篇") ||
+				strings.Contains(txt, "目录") || strings.Contains(txt, "书架") ||
+				strings.Contains(txt, "首页") || strings.Contains(txt, "返回") {
+				return true
+			}
+
+			isNextPage := txt == "下一页" || txt == "下页" || txt == "下一頁" || txt == "次頁" || txt == "翻下页" ||
+				strings.Contains(txt, "下一页") || strings.Contains(txt, "下一頁")
+
+			id, _ := s.Attr("id")
+			class, _ := s.Attr("class")
+			if !isNextPage {
+				if (id == "pb_next" || strings.Contains(class, "page_down") || strings.Contains(class, "nextpage")) &&
+					!strings.Contains(txt, "章") && !strings.Contains(txt, "卷") {
+					isNextPage = true
+				}
+			}
+
+			if isNextPage {
+				abs, err := resolve(base, href)
+				if err == nil && abs != "" {
+					normAbs := strings.TrimRight(abs, "/")
+					if normAbs != normCurr {
+						if normNextChapterURL != "" && normAbs == normNextChapterURL {
+							candidate = ""
+							return false
+						}
+						candidate = abs
+						return false
+					}
+				}
+			}
+			return true
+		})
+
+		if candidate != "" {
+			return candidate
+		}
+	}
+
+	return ""
 }

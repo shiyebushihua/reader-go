@@ -12,9 +12,12 @@ import {
   Shuffle,
   ArrowUpDown,
   LocateFixed,
-  LoaderCircle
+  LoaderCircle,
+  ChevronDown,
+  ChevronUp,
+  SlidersHorizontal
 } from 'lucide-vue-next'
-import { api, id, message } from '../api'
+import { api, id, message, getExportUrl } from '../api'
 import type { Book, Chapter, Source, SearchResult } from '../types'
 import { showConfirm } from '../confirm'
 import {
@@ -38,6 +41,8 @@ const notice = ref('')
 const query = ref('')
 const group = ref('')
 const isOfflineReady = ref(false)
+const introExpanded = ref(false)
+const toolsExpanded = ref(false)
 
 const cachedChapterIds = ref<Set<string>>(new Set())
 const cachedCount = computed(() => cachedChapterIds.value.size)
@@ -313,7 +318,9 @@ onMounted(() => {
 </script>
 
 <template>
-  <a href="#/library" class="back-link"><ArrowLeft :size="17" />返回我的书架</a>
+  <div class="page-top-nav">
+    <a href="#/library" class="back-link"><ArrowLeft :size="16" />返回我的书架</a>
+  </div>
   <div v-if="error" class="error" role="alert">
     <span>{{ error }}</span>
     <div class="actions">
@@ -329,35 +336,60 @@ onMounted(() => {
     <section class="book-detail">
       <BookCover :title="book.title" :kind="book.kind" />
       <div class="book-detail-info">
-        <span class="eyebrow">
-          {{ book.kind === 'online' ? 'ONLINE COLLECTION' : 'PERSONAL COLLECTION' }}
+        <div class="detail-header-tags">
+          <span class="eyebrow">{{ book.kind === 'online' ? '网络书源' : '本地藏书' }}</span>
           <span v-if="currentSourceName" class="source-origin-badge">{{ currentSourceName }}</span>
           <span v-if="isOfflineReady" class="offline-badge">离线缓存就绪</span>
-        </span>
+        </div>
         <h1>{{ book.title }}</h1>
-        <p class="muted">
-          {{ book.author || '佚名' }}<span class="dot">·</span>{{ book.chapterCount }} 章<span class="dot">·</span>{{ book.kind.toUpperCase() }}
+        <p class="muted book-meta-row">
+          <span>{{ book.author || '佚名' }}</span>
+          <span class="dot">·</span>
+          <span>共 {{ book.chapterCount }} 章</span>
+          <span class="dot">·</span>
+          <span>{{ book.kind.toUpperCase() }}</span>
+          <span v-if="book.progress" class="detail-progress-chip">已读至 {{ Math.round(book.progress.position * 100) }}%</span>
         </p>
-        <p class="book-intro">{{ book.intro || '暂无简介。' }}</p>
-        <div class="actions">
+        <div class="book-intro-wrap">
+          <p :class="['book-intro', { clamped: !introExpanded }]">{{ book.intro || '暂无简介。' }}</p>
+          <button
+            v-if="(book.intro || '').length > 80"
+            type="button"
+            class="intro-toggle-btn"
+            @click="introExpanded = !introExpanded"
+          >
+            <component :is="introExpanded ? ChevronUp : ChevronDown" :size="14" />
+            <span>{{ introExpanded ? '收起简介' : '展开简介' }}</span>
+          </button>
+        </div>
+        <div class="actions detail-actions-primary">
           <a v-if="chapters.length" class="button primary" :href="`#/read/${id(book.id)}`">
             <BookOpen :size="18" />{{ book.progress ? '继续阅读' : '开始阅读' }}<ArrowRight :size="17" />
           </a>
           <button v-else disabled>暂无可读章节</button>
-          <button v-if="book.kind === 'online'" :disabled="busy || cachingBusy" @click="refresh">
-            <RefreshCw :size="17" />更新目录
+          <button v-if="book.kind === 'online'" :disabled="busy || cachingBusy" @click="openChangeSourceModal" title="切换到其他可用书源">
+            <Shuffle :size="16" />换源
           </button>
-          <button v-if="book.kind === 'online'" :disabled="busy || cachingBusy" @click="openChangeSourceModal">
-            <Shuffle :size="17" />换源
+          <button v-if="book.kind === 'online'" :disabled="busy || cachingBusy" @click="refresh" title="向书源请求刷新章节目录">
+            <RefreshCw :size="16" />更新目录
           </button>
           <button v-if="chapters.length && !cachingBusy" :disabled="busy" @click="cacheSubsequent" title="从当前阅读进度向后缓存章节">
-            <Download :size="17" />离线缓存后续章节
+            <Download :size="16" />离线缓存后续章节
           </button>
           <button v-if="chapters.length && !cachingBusy" :disabled="busy" @click="cacheAll" title="离线下载全书所有章节">
-            <Download :size="17" />离线全书
+            <Download :size="16" />离线全书
+          </button>
+          <button
+            type="button"
+            class="button secondary"
+            @click="toolsExpanded = !toolsExpanded"
+            :title="toolsExpanded ? '收起工具箱' : '展开更多设置与工具'"
+          >
+            <SlidersHorizontal :size="15" />
+            <span>{{ toolsExpanded ? '收起工具' : '更多选项' }}</span>
           </button>
           <button v-if="cachingBusy" class="danger" @click="cancelCaching">
-            <X :size="17" />取消缓存
+            <X :size="16" />取消缓存
           </button>
         </div>
         <div v-if="chapters.length" class="offline-cache-panel">
@@ -374,13 +406,18 @@ onMounted(() => {
         <p v-if="book.progress" class="fine-print">
           上次读到：{{ chapters.find(c => c.id === book?.progress?.chapterId)?.title || '已保存章节' }} · 章内 {{ Math.round(book.progress.position * 100) }}%
         </p>
-        <form class="inline-form" @submit.prevent="saveGroup">
-          <label>书架分组<input v-model="group" maxlength="80" placeholder="如：文学、正在读" /></label>
-          <button :disabled="busy">保存分组</button>
-        </form>
-        <button class="text-button danger" :disabled="busy" @click="remove">
-          <Trash2 :size="15" />从书架移除
-        </button>
+        <div v-if="toolsExpanded" class="book-secondary-tools">
+          <form class="inline-form" @submit.prevent="saveGroup">
+            <label>书架分组<input v-model="group" maxlength="80" placeholder="如：文学、正在读" /></label>
+            <button :disabled="busy">保存分组</button>
+          </form>
+          <a v-if="chapters.length" class="button secondary" :href="getExportUrl(book.id)" target="_blank" title="导出已缓存章节为TXT文档">
+            <Download :size="15" />导出TXT
+          </a>
+          <button class="text-button danger" :disabled="busy" @click="remove">
+            <Trash2 :size="15" />从书架移除
+          </button>
+        </div>
       </div>
     </section>
     <section class="toc-section">

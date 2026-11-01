@@ -32,7 +32,7 @@ import (
 //go:embed schema.sql
 var schema string
 
-const Version = "0.0.16"
+const Version = "0.0.25"
 const DefaultVersion = Version
 
 type Config struct {
@@ -97,7 +97,7 @@ func LoadConfig() (Config, error) {
 		}
 		c.PublicURL = strings.TrimRight(c.PublicURL, "/")
 	}
-	for _, p := range []string{"books", "tmp"} {
+	for _, p := range []string{"books", "tmp", "cache/books"} {
 		if e := os.MkdirAll(filepath.Join(c.DataDir, p), 0700); e != nil {
 			return c, e
 		}
@@ -105,13 +105,25 @@ func LoadConfig() (Config, error) {
 	return c, nil
 }
 func OpenDB() (*sql.DB, error) {
-	pass, e := secret("READER_DB_PASSWORD")
-	if e != nil {
-		return nil, e
+	c, err := LoadConfig()
+	if err != nil {
+		return nil, err
 	}
+	db, _, err := OpenDBWithConfig(c)
+	return db, err
+}
+func OpenDBWithDriver(c Config) (*sql.DB, DBDriver, error) {
+	return OpenDBWithConfig(c)
+}
+func Migrate(ctx context.Context, db *sql.DB) error {
+	c, _ := LoadConfig()
+	driver := DetectDriver(c)
+	return MigrateDB(ctx, db, driver)
+}
+func legacyOpenMySQL() (*sql.DB, error) {
 	c := mysql.NewConfig()
 	c.User = os.Getenv("READER_DB_USER")
-	c.Passwd = pass
+	c.Passwd = os.Getenv("READER_DB_PASSWORD")
 	c.DBName = os.Getenv("READER_DB_NAME")
 	c.Net = "tcp"
 	c.Addr = net.JoinHostPort(env("READER_DB_HOST", "127.0.0.1"), env("READER_DB_PORT", "3306"))
@@ -194,7 +206,7 @@ func EnsureUserSourcesSchema(ctx context.Context, db *sql.DB) error {
 	}
 	return nil
 }
-func Migrate(ctx context.Context, db *sql.DB) error {
+func MigrateMySQL(ctx context.Context, db *sql.DB) error {
 	conn, e := db.Conn(ctx)
 	if e != nil {
 		return e

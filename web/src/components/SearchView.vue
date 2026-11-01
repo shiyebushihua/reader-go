@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, onActivated, onDeactivated, computed, watch } from 'vue'
 import {
   Search,
   ArrowRight,
@@ -20,10 +20,12 @@ import {
   X,
   CheckSquare,
   Clock,
-  BookOpen
+  BookOpen,
+  Layers,
+  ListFilter
 } from 'lucide-vue-next'
 import { api, id, message, streamSearch, type StreamSearchProgress, type StreamSearchStart } from '../api'
-import type { Source, SearchResult, Book } from '../types'
+import type { Source, SearchResult, Book, AggregatedWork } from '../types'
 import BookCover from './BookCover.vue'
 
 interface SourceStatus {
@@ -65,7 +67,12 @@ const pickerPageSize = 5
 const resultPage = ref(1)
 const resultPageSize = ref(5)
 const hudExpanded = ref(false)
+const viewMode = ref<'aggregated' | 'flat'>('aggregated')
+const expandedWorks = ref<Record<string, boolean>>({})
 
+function toggleWork(workKey: string) {
+  expandedWorks.value[workKey] = !expandedWorks.value[workKey]
+}
 const sourceStatuses = ref<Record<string, SourceStatus>>({})
 const completedSources = ref(0)
 const totalSources = ref(0)
@@ -149,9 +156,64 @@ const pagedPickerSources = computed(() => {
   return filteredPickerSources.value.slice(start, start + pickerPageSize)
 })
 
+// 作品聚合分组（按书名+作者合并同一作品的不同书源）
+const aggregatedWorks = computed<AggregatedWork[]>(() => {
+  if (!results.value.length) return []
+  const map = new Map<string, AggregatedWork>()
+  const list: AggregatedWork[] = []
+
+  for (const item of results.value) {
+    const normTitle = normalizeMatchText(item.title)
+    const normAuthor = normalizeMatchText(item.author)
+    const workKey = `${normTitle}:::${normAuthor}`
+
+    let work = map.get(workKey)
+    if (!work) {
+      work = {
+        workKey,
+        title: item.title,
+        author: item.author,
+        normalizedAuthor: normAuthor,
+        cover: item.cover,
+        intro: item.intro,
+        latestChapter: item.latestChapter,
+        sources: [item],
+        primarySource: item
+      }
+      map.set(workKey, work)
+      list.push(work)
+    } else {
+      work.sources.push(item)
+      if (!work.latestChapter && item.latestChapter) {
+        work.latestChapter = item.latestChapter
+      }
+      if ((!work.intro || work.intro === '暂无简介。') && item.intro) {
+        work.intro = item.intro
+      }
+      if (!work.cover && item.cover) {
+        work.cover = item.cover
+      }
+    }
+  }
+  return list
+})
+
+const totalWorkPages = computed(() => {
+  return Math.max(1, Math.ceil(aggregatedWorks.value.length / resultPageSize.value))
+})
+
+const pagedWorks = computed(() => {
+  const start = (resultPage.value - 1) * resultPageSize.value
+  return aggregatedWorks.value.slice(start, start + resultPageSize.value)
+})
+
 // 搜索结果分页
 const totalResultPages = computed(() => {
   return Math.max(1, Math.ceil(results.value.length / resultPageSize.value))
+})
+
+const totalDisplayPages = computed(() => {
+  return viewMode.value === 'aggregated' ? totalWorkPages.value : totalResultPages.value
 })
 
 const pagedResults = computed(() => {
@@ -314,7 +376,7 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 function changeResultPage(p: number) {
-  if (p < 1 || p > totalResultPages.value) return
+  if (p < 1 || p > totalDisplayPages.value) return
   resultPage.value = p
   const el = document.getElementById('search-results-anchor')
   if (el) {
@@ -489,7 +551,15 @@ async function readNow(result: SearchResult) {
 
 onMounted(() => {
   load()
+})
+
+// Cached searches keep their results and in-flight request, not global UI handlers.
+onActivated(() => {
   window.addEventListener('keydown', handleKeydown)
+})
+onDeactivated(() => {
+  window.removeEventListener('keydown', handleKeydown)
+  showPickerModal.value = false
 })
 
 onUnmounted(() => {
@@ -540,7 +610,7 @@ onUnmounted(() => {
         @click="stopSearch"
       >
         <Square :size="16" />
-        <span>停止 (Esc)</span>
+        <span>停止搜索，保留已找到结果</span>
       </button>
       <button
         v-else
@@ -680,14 +750,14 @@ onUnmounted(() => {
         <span v-if="searching">
           正在检索《<strong>{{ searchedKeyword }}</strong>》
           <small class="muted">
-            · 已找到 <strong>{{ results.length }}</strong> 本书籍 ({{ completedSources }}/{{ totalSources }} 源 · {{ searchSeconds }}s)
+            · 已为你保留 <strong>{{ viewMode === 'aggregated' ? aggregatedWorks.length : results.length }}</strong> {{ viewMode === 'aggregated' ? '部作品' : '本书籍' }} ({{ completedSources }}/{{ totalSources }} 源 · {{ searchSeconds }}s)
           </small>
         </span>
         <span v-else-if="stopped">
-          检索已停止：共找到 <strong>{{ results.length }}</strong> 本与《{{ searchedKeyword }}》相关的书籍（耗时 {{ searchSeconds }}s）
+          已为你保留找到的 <strong>{{ viewMode === 'aggregated' ? aggregatedWorks.length : results.length }}</strong> {{ viewMode === 'aggregated' ? '部作品' : '本书籍' }}（耗时 {{ searchSeconds }}s）
         </span>
         <span v-else>
-          检索完成：共找到 <strong>{{ results.length }}</strong> 本与《{{ searchedKeyword }}》相关的书籍（耗时 {{ searchSeconds }}s）
+          检索完成：共找到 <strong>{{ viewMode === 'aggregated' ? aggregatedWorks.length : results.length }}</strong> {{ viewMode === 'aggregated' ? '部作品' : '本书籍' }}（耗时 {{ searchSeconds }}s）
         </span>
       </div>
       <div class="search-hud-actions">
@@ -698,7 +768,7 @@ onUnmounted(() => {
           @click="stopSearch"
         >
           <Square :size="13" />
-          就看这些
+          停止搜索，保留已找到结果
         </button>
         <button
           type="button"
@@ -808,28 +878,192 @@ onUnmounted(() => {
   <!-- 搜索结果列表（按匹配度精准排序 + 分页器） -->
   <template v-if="results.length > 0">
     <div class="section-heading search-result-head">
-      <div>
+      <div class="search-head-left">
         <h2>
-          搜索结果 <span class="count">{{ results.length }}</span>
+          搜索结果 <span class="count">{{ viewMode === 'aggregated' ? aggregatedWorks.length : results.length }}</span>
         </h2>
-        <span class="muted">按相关度排序</span>
+        <span class="muted">
+          {{ viewMode === 'aggregated' ? `共 ${aggregatedWorks.length} 部作品 · 已聚合各书源` : `共 ${results.length} 条各源检索结果` }}
+        </span>
+      </div>
+
+      <div class="search-view-mode-tabs">
+        <button
+          type="button"
+          :class="['mode-tab-btn', { active: viewMode === 'aggregated' }]"
+          @click="viewMode = 'aggregated'; resultPage = 1"
+          title="将同名同作者书籍聚合展示，避免重复刷屏"
+        >
+          <Layers :size="14" />
+          <span>作品聚合 ({{ aggregatedWorks.length }})</span>
+        </button>
+        <button
+          type="button"
+          :class="['mode-tab-btn', { active: viewMode === 'flat' }]"
+          @click="viewMode = 'flat'; resultPage = 1"
+          title="平铺展示每个书源的独立搜索结果"
+        >
+          <ListFilter :size="14" />
+          <span>全部来源平铺 ({{ results.length }})</span>
+        </button>
       </div>
 
       <div class="result-pagination-ctrls">
         <label class="page-size-label">
           <span>每页</span>
           <select v-model.number="resultPageSize" class="page-size-select" @change="resultPage = 1">
-            <option :value="3">3 本</option>
-            <option :value="5">5 本</option>
-            <option :value="10">10 本</option>
-            <option :value="20">20 本</option>
+            <option :value="3">3 条</option>
+            <option :value="5">5 条</option>
+            <option :value="10">10 条</option>
+            <option :value="20">20 条</option>
           </select>
         </label>
-        <span class="page-current-info">第 {{ resultPage }} / {{ totalResultPages }} 页</span>
+        <span class="page-current-info">第 {{ resultPage }} / {{ totalDisplayPages }} 页</span>
       </div>
     </div>
 
-    <div class="result-grid">
+    <!-- 1. 作品聚合视图 (默认推荐) -->
+    <div v-if="viewMode === 'aggregated'" class="result-grid aggregated-work-grid">
+      <article
+        v-for="(work, index) in pagedWorks"
+        :key="work.workKey"
+        class="panel result-card aggregated-card"
+      >
+        <BookCover :title="work.title" :index="index + (resultPage - 1) * resultPageSize" />
+        <div class="result-card-body">
+          <div class="result-card-tags">
+            <span v-if="isExactMatch(work.primarySource)" class="exact-match-badge">
+              <Sparkles :size="11" /> 精准匹配
+            </span>
+            <span class="tag source-count-tag">
+              共 {{ work.sources.length }} 个书源
+            </span>
+            <span class="tag best-source-tag">
+              首推：{{ sources.find(s => s.id === work.primarySource.sourceId)?.name || work.primarySource.sourceName || '在线书源' }}
+            </span>
+          </div>
+          <h2>{{ work.title }}</h2>
+          <p class="muted result-author">{{ work.author || '佚名' }}</p>
+          <div v-if="work.latestChapter" class="result-latest-chapter" :title="`最新章节：${work.latestChapter}`">
+            <span class="latest-chapter-tag">
+              <Clock :size="12" class="latest-chapter-icon" />
+              最新
+            </span>
+            <span class="latest-chapter-title">{{ work.latestChapter }}</span>
+          </div>
+          <p class="result-intro">{{ work.intro || '暂无简介。' }}</p>
+          <div class="result-card-action">
+            <template v-if="added[key(work.primarySource)]">
+              <a
+                class="button primary"
+                :href="`#/read/${id(added[key(work.primarySource)])}`"
+              >
+                <BookOpen :size="16" />
+                立即阅读
+              </a>
+              <a
+                class="button secondary"
+                :href="`#/book/${id(added[key(work.primarySource)])}`"
+              >
+                <Check :size="15" />
+                已在书架 · 目录
+              </a>
+            </template>
+            <template v-else>
+              <button
+                type="button"
+                class="primary"
+                :disabled="adding === key(work.primarySource) || readingKey === key(work.primarySource)"
+                @click="readNow(work.primarySource)"
+              >
+                <LoaderCircle v-if="readingKey === key(work.primarySource)" class="spin" :size="16" />
+                <BookOpen v-else :size="16" />
+                立即阅读
+              </button>
+              <button
+                type="button"
+                class="secondary"
+                :disabled="adding === key(work.primarySource) || readingKey === key(work.primarySource)"
+                @click="add(work.primarySource)"
+              >
+                <LoaderCircle v-if="adding === key(work.primarySource)" class="spin" :size="16" />
+                <Plus v-else :size="16" />
+                加入书架
+              </button>
+            </template>
+            <button
+              type="button"
+              class="button secondary toggle-sources-btn"
+              @click="toggleWork(work.workKey)"
+              :aria-expanded="expandedWorks[work.workKey]"
+            >
+              <span>{{ expandedWorks[work.workKey] ? '收起书源' : `查看全部 ${work.sources.length} 个书源` }}</span>
+              <ChevronUp v-if="expandedWorks[work.workKey]" :size="14" />
+              <ChevronDown v-else :size="14" />
+            </button>
+          </div>
+
+          <!-- 聚合卡片内嵌各书源对比列表 -->
+          <div v-show="expandedWorks[work.workKey]" class="nested-sources-drawer">
+            <div class="nested-sources-header">
+              <span class="nested-title">可换读的书源版本（共 {{ work.sources.length }} 个）：</span>
+            </div>
+            <div class="nested-sources-list">
+              <div
+                v-for="srcResult in work.sources"
+                :key="key(srcResult)"
+                class="nested-source-row"
+              >
+                <div class="nested-source-info">
+                  <div class="nested-source-name-wrap">
+                    <strong class="nested-source-name">
+                      {{ sources.find(s => s.id === srcResult.sourceId)?.name || srcResult.sourceName || '在线书源' }}
+                    </strong>
+                    <span v-if="srcResult === work.primarySource" class="primary-badge">首选</span>
+                  </div>
+                  <span v-if="srcResult.latestChapter" class="nested-latest-chapter" :title="srcResult.latestChapter">
+                    <Clock :size="11" /> {{ srcResult.latestChapter }}
+                  </span>
+                </div>
+                <div class="nested-source-actions">
+                  <template v-if="added[key(srcResult)]">
+                    <a :href="`#/read/${id(added[key(srcResult)])}`" class="button primary small-btn">
+                      <BookOpen :size="13" /> 读此源
+                    </a>
+                    <span class="added-badge">已加架</span>
+                  </template>
+                  <template v-else>
+                    <button
+                      type="button"
+                      class="primary small-btn"
+                      :disabled="adding === key(srcResult) || readingKey === key(srcResult)"
+                      @click="readNow(srcResult)"
+                    >
+                      <LoaderCircle v-if="readingKey === key(srcResult)" class="spin" :size="13" />
+                      <BookOpen v-else :size="13" />
+                      读此源
+                    </button>
+                    <button
+                      type="button"
+                      class="secondary small-btn"
+                      :disabled="adding === key(srcResult) || readingKey === key(srcResult)"
+                      @click="add(srcResult)"
+                    >
+                      <LoaderCircle v-if="adding === key(srcResult)" class="spin" :size="13" />
+                      <Plus v-else :size="13" />
+                      加架
+                    </button>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+    </div>
+
+    <!-- 2. 全部来源平铺视图 -->
+    <div v-else class="result-grid">
       <article
         v-for="(result, index) in pagedResults"
         :key="key(result)"
@@ -900,9 +1134,9 @@ onUnmounted(() => {
     </div>
 
     <!-- 搜索结果分页导航栏 -->
-    <div v-if="totalResultPages > 1" class="pagination-bar">
+    <div v-if="totalDisplayPages > 1" class="pagination-bar">
       <div class="pagination-info">
-        <span>第 <strong>{{ resultPage }}</strong> / {{ totalResultPages }} 页（共 {{ results.length }} 本匹配书籍）</span>
+        <span>第 <strong>{{ resultPage }}</strong> / {{ totalDisplayPages }} 页（共 {{ viewMode === 'aggregated' ? aggregatedWorks.length : results.length }} {{ viewMode === 'aggregated' ? '部作品' : '条结果' }}）</span>
       </div>
       <div class="pagination-controls">
         <button
@@ -926,7 +1160,7 @@ onUnmounted(() => {
         <button
           type="button"
           class="secondary pagination-btn"
-          :disabled="resultPage >= totalResultPages"
+          :disabled="resultPage >= totalDisplayPages"
           @click="changeResultPage(resultPage + 1)"
         >
           下一页
@@ -935,8 +1169,8 @@ onUnmounted(() => {
         <button
           type="button"
           class="secondary pagination-btn"
-          :disabled="resultPage >= totalResultPages"
-          @click="changeResultPage(totalResultPages)"
+          :disabled="resultPage >= totalDisplayPages"
+          @click="changeResultPage(totalDisplayPages)"
         >
           末页
         </button>

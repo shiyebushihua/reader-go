@@ -9,6 +9,8 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andybalholm/cascadia"
+	"github.com/antchfx/htmlquery"
+	"github.com/tidwall/gjson"
 	"golang.org/x/net/html"
 )
 
@@ -16,6 +18,7 @@ type value struct {
 	node *goquery.Selection
 	data any
 	raw  string
+	env  *JSEnv
 }
 
 func (v value) rawString() string {
@@ -44,16 +47,21 @@ func (v value) rawString() string {
 func document(body []byte) (value, error) {
 	text := strings.TrimPrefix(strings.TrimSpace(string(body)), "\ufeff")
 	if strings.HasPrefix(text, "{") || strings.HasPrefix(text, "[") {
-		if !json.Valid([]byte(text)) {
-			return value{}, fmt.Errorf("invalid JSON document")
-		}
 		var v any
 		dec := json.NewDecoder(strings.NewReader(text))
 		dec.UseNumber()
-		if err := dec.Decode(&v); err != nil {
-			return value{}, fmt.Errorf("invalid JSON document: %w", err)
+		if err := dec.Decode(&v); err == nil {
+			// Ensure no trailing tokens after valid JSON
+			if dec.More() {
+				return value{}, fmt.Errorf("trailing garbage after JSON")
+			}
+			var dummy any
+			if dec.Decode(&dummy) == nil {
+				return value{}, fmt.Errorf("extra JSON data found")
+			}
+			return value{data: v, raw: text}, nil
 		}
-		return value{data: v, raw: text}, nil
+		return value{}, fmt.Errorf("malformed JSON document")
 	}
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(text))
 	if err != nil {
@@ -61,6 +69,7 @@ func document(body []byte) (value, error) {
 	}
 	return value{node: doc.Selection, raw: text}, nil
 }
+
 func cleanRule(rule string) string {
 	rule = putPattern.ReplaceAllString(rule, "")
 	rule = strings.TrimPrefix(rule, "@@")
@@ -70,32 +79,56 @@ func cleanRule(rule string) string {
 }
 
 func supported(rule string) error {
-	rule = putPattern.ReplaceAllString(rule, "")
-	low := strings.ToLower(rule)
-	for _, token := range []string{"@js:", "<js>", "javascript:", "@xpath:", "xpath:"} {
-		if strings.Contains(low, token) {
-			return fmt.Errorf("unsupported rule construct %q", token)
-		}
-	}
-	if strings.HasPrefix(strings.TrimSpace(rule), "//") {
-		return fmt.Errorf("unsupported XPath rule")
-	}
+	// Legado 3.0 supports CSS, XPath, JSONPath, Regular Expressions, and embedded JS.
+	// We no longer reject these rules.
 	return nil
 }
 
 func extract(v value, rule string) (string, error) {
-	rule = cleanRule(rule)
-	if strings.TrimSpace(rule) == "" {
+	rule = strings.TrimSpace(rule)
+	if rule == "" {
 		return "", nil
 	}
-	if err := supported(rule); err != nil {
-		return "", err
+
+	// 1. Check for embedded JS (<js>...</js> or @js:...)
+	// 0. If rule is purely @get:{key}, return the stored variable directly
+	if v.env != nil && v.env.Storage != nil {
+		trimmed := strings.TrimSpace(rule)
+		if strings.HasPrefix(trimmed, "@get:{") && strings.HasSuffix(trimmed, "}") && !strings.ContainsAny(trimmed, "&|%#") {
+			key := strings.TrimSuffix(strings.TrimPrefix(trimmed, "@get:{"), "}")
+			return v.env.Storage.Get(strings.TrimSpace(key)), nil
+		}
 	}
-	// Cleaning applies after the complete fallback/concatenation expression.
-	parts := strings.Split(rule, "##")
-	base := strings.TrimSpace(parts[0])
+	// 1. Check for embedded JS (<js>...</js> or @js:...)
+	mainRule, jsCode := SplitJSBlock(rule)
+	mainRule = cleanRule(mainRule)
 	var text string
+	var err error
+
+	// 2. If mainRule is empty but we have JS, evaluate directly on raw
+	if mainRule == "" && jsCode != "" {
+		env := JSEnv{
+			Result:  v.rawString(),
+			Src:     v.rawString(),
+			BaseURL: "",
+		}
+		if v.env != nil {
+			env = *v.env
+			env.Result = v.rawString()
+		}
+		val, jsErr := RunLegadoJS(jsCode, env)
+		if jsErr != nil {
+			return "", jsErr
+		}
+		return fmt.Sprintf("%v", val), nil
+	}
+
+	// 3. Extraction pipeline: split cleaning regex '##'
+	parts := strings.Split(mainRule, "##")
+	base := strings.TrimSpace(parts[0])
+
 	if strings.Contains(base, "||") {
+		// Fallback candidate evaluation
 		for _, r := range strings.Split(base, "||") {
 			s, e := extract(v, strings.TrimSpace(r))
 			if e != nil {
@@ -107,6 +140,7 @@ func extract(v value, rule string) (string, error) {
 			}
 		}
 	} else if strings.Contains(base, "&&") || strings.Contains(base, "%%") {
+		// Concat or interleaving evaluation
 		var out []string
 		sep := "&&"
 		if strings.Contains(base, "%%") {
@@ -123,100 +157,126 @@ func extract(v value, rule string) (string, error) {
 		}
 		text = strings.Join(out, "\n")
 	} else if strings.HasPrefix(strings.TrimSpace(base), "$") {
-		if v.node != nil {
-			return "", fmt.Errorf("JSONPath rule applied to HTML")
-		}
-		vals, err := jsonPath(v.data, strings.TrimSpace(base))
+		// JSONPath extraction via GJSON
+		text, err = extractJSONPath(v, strings.TrimSpace(base))
 		if err != nil {
 			return "", err
 		}
-		var out []string
-		for _, x := range vals {
-			switch n := x.(type) {
-			case string:
-				out = append(out, n)
-			case json.Number:
-				out = append(out, n.String())
-			case bool:
-				out = append(out, strconv.FormatBool(n))
-			case nil:
-			default:
-				return "", fmt.Errorf("JSONPath scalar rule selected an object or array")
-			}
+	} else if isXPath(base) {
+		// XPath extraction
+		text, err = extractXPath(v, base)
+		if err != nil {
+			return "", err
 		}
-		text = strings.Join(out, "\n")
 	} else if base == "" && len(parts) >= 2 {
 		text = v.rawString()
 	} else if base != "" {
-		if v.node == nil {
-			return "", fmt.Errorf("HTML rule applied to JSON")
-		}
-		sel, attr, err := htmlSelect(v.node, strings.TrimSpace(base), true)
-		if err != nil {
-			return "", err
-		}
-		var out []string
-		sel.Each(func(_ int, s *goquery.Selection) {
-			var t string
-			switch attr {
-			case "text", "textNodes", "html", "all":
-				for _, n := range s.Nodes {
-					t += plainText(n)
+		if v.node != nil {
+			sel, attr, err := htmlSelect(v.node, strings.TrimSpace(base), true)
+			if err != nil {
+				if !strings.ContainsAny(base, "@[]></") {
+					return base, nil
 				}
-			case "ownText":
-				for _, n := range s.Nodes {
-					for c := n.FirstChild; c != nil; c = c.NextSibling {
-						if c.Type == html.TextNode {
-							t += c.Data
+				return "", err
+			}
+			var out []string
+			sel.Each(func(_ int, s *goquery.Selection) {
+				var t string
+				switch attr {
+				case "text", "textNodes", "html", "all":
+					for _, n := range s.Nodes {
+						t += plainText(n)
+					}
+				case "ownText":
+					for _, n := range s.Nodes {
+						for c := n.FirstChild; c != nil; c = c.NextSibling {
+							if c.Type == html.TextNode {
+								t += c.Data
+							}
 						}
 					}
+				default:
+					t, _ = s.Attr(attr)
 				}
-			default:
-				t, _ = s.Attr(attr)
+				if t = strings.TrimSpace(t); t != "" {
+					out = append(out, t)
+				}
+			})
+			text = strings.Join(out, "\n")
+		} else if v.raw != "" && gjson.Valid(v.raw) {
+			// Fallback: If JSON response but given dot-path without $ prefix (e.g. "data.content")
+			res := gjson.Get(v.raw, base)
+			if res.Exists() {
+				text = res.String()
 			}
-			if t = strings.TrimSpace(t); t != "" {
-				out = append(out, t)
-			}
-		})
-		text = strings.Join(out, "\n")
+		}
 	}
+
+	// 4. Regex replacement pipeline
+	// 4. Regex replacement pipeline
 	if len(parts) >= 2 {
 		pattern := sanitizeRegex(parts[1])
 		re, err := regexp.Compile(pattern)
-		if err != nil {
-			return "", fmt.Errorf("unsupported/invalid cleaning regex: %w", err)
-		}
-		replacement := ""
-		if len(parts) >= 3 {
-			replacement = parts[2]
-		}
-		replaceFirst := len(parts) > 3 || base == ""
-		if replaceFirst {
-			loc := re.FindStringIndex(text)
-			if loc != nil {
-				matched := text[loc[0]:loc[1]]
-				text = re.ReplaceAllString(matched, replacement)
-			} else {
-				text = ""
+		if err == nil {
+			replacement := ""
+			if len(parts) >= 3 {
+				replacement = parts[2]
 			}
-		} else {
-			text = re.ReplaceAllString(text, replacement)
+			replaceFirst := len(parts) > 3 || base == "" || strings.HasSuffix(mainRule, "###")
+			if strings.HasSuffix(replacement, "###") {
+				replacement = strings.TrimSuffix(replacement, "###")
+				replaceFirst = true
+			}
+			if replaceFirst {
+				loc := re.FindStringIndex(text)
+				if loc != nil {
+					matched := text[loc[0]:loc[1]]
+					text = re.ReplaceAllString(matched, replacement)
+				} else {
+					text = ""
+				}
+			} else {
+				text = re.ReplaceAllString(text, replacement)
+			}
 		}
 	}
-	return strings.TrimSpace(text), nil
+
+	text = strings.TrimSpace(text)
+
+	// 5. If rule had a post-processing JS block, pass text as 'result'
+	if jsCode != "" {
+		env := JSEnv{
+			Result:  text,
+			Src:     v.rawString(),
+			BaseURL: "",
+		}
+		if v.env != nil {
+			env = *v.env
+			env.Result = text
+		}
+		val, jsErr := RunLegadoJS(jsCode, env)
+		if jsErr == nil && val != nil {
+			text = strings.TrimSpace(fmt.Sprintf("%v", val))
+		}
+	}
+
+	return text, nil
 }
+
 func elements(v value, rule string) ([]value, error) {
-	rule = cleanRule(rule)
+	rule = strings.TrimSpace(rule)
 	if rule == "" {
 		return nil, fmt.Errorf("missing list rule")
 	}
-	if err := supported(rule); err != nil {
-		return nil, err
-	}
+
+	// Check for embedded JS in element rule
+	mainRule, jsCode := SplitJSBlock(rule)
+	mainRule = cleanRule(mainRule)
+
 	for _, op := range []string{"||", "&&", "%%"} {
-		if strings.Contains(rule, op) {
+		if strings.Contains(mainRule, op) {
 			var out []value
-			for _, r := range strings.Split(rule, op) {
+			for _, r := range strings.Split(mainRule, op) {
 				vs, err := elements(v, strings.TrimSpace(r))
 				if err != nil {
 					return nil, err
@@ -232,38 +292,198 @@ func elements(v value, rule string) ([]value, error) {
 			return out, nil
 		}
 	}
+
 	var out []value
-	if strings.HasPrefix(rule, "$") {
-		if v.node != nil {
-			return nil, fmt.Errorf("JSONPath list applied to HTML")
-		}
-		vals, err := jsonPath(v.data, rule)
+	if strings.HasPrefix(mainRule, "$") {
+		// JSONPath list extraction via GJSON
+		out = elementsJSONPath(v, mainRule)
+	} else if isXPath(mainRule) {
+		// XPath list extraction
+		items, err := elementsXPath(v, mainRule)
 		if err != nil {
 			return nil, err
 		}
-		for _, x := range vals {
-			if arr, ok := x.([]any); ok {
-				for _, a := range arr {
-					out = append(out, value{data: a})
-				}
-			} else {
-				out = append(out, value{data: x})
-			}
-		}
+		out = items
 	} else {
-		if v.node == nil {
-			return nil, fmt.Errorf("HTML list applied to JSON")
+		if v.node != nil {
+			sel, _, err := htmlSelect(v.node, mainRule, false)
+			if err != nil {
+				return nil, err
+			}
+			sel.Each(func(_ int, s *goquery.Selection) {
+				out = append(out, value{node: s, env: v.env})
+			})
+		} else if v.raw != "" && gjson.Valid(v.raw) {
+			// Auto route to GJSON if input is json
+			out = elementsJSONPath(v, mainRule)
 		}
-		sel, _, err := htmlSelect(v.node, rule, false)
-		if err != nil {
-			return nil, err
-		}
-		sel.Each(func(_ int, s *goquery.Selection) { out = append(out, value{node: s}) })
 	}
+
+	// If JS post-processing exists on elements level
+	if jsCode != "" {
+		// Execute JS on the raw result
+		env := JSEnv{Result: out, Src: v.rawString()}
+		if v.env != nil {
+			env = *v.env
+			env.Result = out
+		}
+		_, _ = RunLegadoJS(jsCode, env)
+	}
+
 	if len(out) > 20000 {
 		return nil, fmt.Errorf("list exceeds 20000 items")
 	}
 	return out, nil
+}
+
+// XPath Helper Functions
+func isXPath(rule string) bool {
+	rule = strings.TrimSpace(rule)
+	return strings.HasPrefix(rule, "//") || strings.HasPrefix(rule, "xpath:") || strings.HasPrefix(rule, "@xpath:")
+}
+
+func cleanXPath(rule string) string {
+	rule = strings.TrimSpace(rule)
+	rule = strings.TrimPrefix(rule, "@xpath:")
+	rule = strings.TrimPrefix(rule, "xpath:")
+	return strings.TrimSpace(rule)
+}
+
+func extractXPath(v value, rule string) (string, error) {
+	rule = cleanXPath(rule)
+	raw := v.rawString()
+	if raw == "" {
+		return "", nil
+	}
+	doc, err := htmlquery.Parse(strings.NewReader(raw))
+	if err != nil {
+		return "", err
+	}
+
+	nodes, err := htmlquery.QueryAll(doc, rule)
+	if err != nil {
+		return "", fmt.Errorf("xpath query error: %w", err)
+	}
+
+	var texts []string
+	for _, n := range nodes {
+		t := htmlquery.InnerText(n)
+		t = strings.TrimSpace(t)
+		if t != "" {
+			texts = append(texts, t)
+		}
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
+func elementsXPath(v value, rule string) ([]value, error) {
+	rule = cleanXPath(rule)
+	raw := v.rawString()
+	if raw == "" {
+		return nil, nil
+	}
+	doc, err := htmlquery.Parse(strings.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := htmlquery.QueryAll(doc, rule)
+	if err != nil {
+		return nil, fmt.Errorf("xpath query error: %w", err)
+	}
+	var out []value
+	for _, n := range nodes {
+		htmlStr := htmlquery.OutputHTML(n, true)
+		subDoc, _ := goquery.NewDocumentFromReader(strings.NewReader(htmlStr))
+		if subDoc != nil {
+			out = append(out, value{node: subDoc.Selection, raw: htmlStr, env: v.env})
+		}
+	}
+	return out, nil
+}
+
+// GJSON (JSONPath) Helper Functions
+func validateJSONPath(path string) error {
+	if strings.Contains(path, "['']") || strings.Contains(path, `[""]`) {
+		return fmt.Errorf("invalid jsonpath empty key: %s", path)
+	}
+	if strings.Contains(path, "','") || strings.Contains(path, `","`) {
+		return fmt.Errorf("unsupported jsonpath union: %s", path)
+	}
+	if strings.Contains(path, "[-") {
+		return fmt.Errorf("unsupported negative index: %s", path)
+	}
+	if strings.Contains(path, ":") && strings.Contains(path, "[") {
+		return fmt.Errorf("unsupported jsonpath slice: %s", path)
+	}
+	return nil
+}
+
+func normalizeGJSONPath(path string) string {
+	path = strings.TrimSpace(path)
+	path = strings.TrimPrefix(path, "$")
+	path = strings.TrimPrefix(path, ".")
+	// Strip trailing [*] because in gjson 'data.list' already accesses the array
+	path = strings.TrimSuffix(path, "[*]")
+	path = strings.ReplaceAll(path, "[*]", "")
+	path = strings.ReplaceAll(path, "['", ".")
+	path = strings.ReplaceAll(path, "']", "")
+	path = strings.ReplaceAll(path, "[\"", ".")
+	path = strings.ReplaceAll(path, "\"]", "")
+	path = strings.ReplaceAll(path, "[", ".")
+	path = strings.ReplaceAll(path, "]", "")
+	path = strings.Trim(path, ".")
+	return path
+}
+func extractJSONPath(v value, path string) (string, error) {
+	if err := validateJSONPath(path); err != nil {
+		return "", err
+	}
+	raw := v.rawString()
+	if raw == "" {
+		return "", nil
+	}
+	gpath := normalizeGJSONPath(path)
+	res := gjson.Get(raw, gpath)
+	if !res.Exists() {
+		return "", nil
+	}
+	if res.IsArray() {
+		var out []string
+		res.ForEach(func(_, value gjson.Result) bool {
+			s := strings.TrimSpace(value.String())
+			if s != "" {
+				out = append(out, s)
+			}
+			return true
+		})
+		return strings.Join(out, "\n"), nil
+	}
+	return strings.TrimSpace(res.String()), nil
+}
+
+func elementsJSONPath(v value, path string) []value {
+	raw := v.rawString()
+	if raw == "" {
+		return nil
+	}
+	gpath := normalizeGJSONPath(path)
+	res := gjson.Get(raw, gpath)
+	var out []value
+	if res.IsArray() {
+		res.ForEach(func(_, item gjson.Result) bool {
+			itemRaw := item.Raw
+			var obj any
+			_ = json.Unmarshal([]byte(itemRaw), &obj)
+			out = append(out, value{data: obj, raw: itemRaw, env: v.env})
+			return true
+		})
+	} else if res.Exists() {
+		itemRaw := res.Raw
+		var obj any
+		_ = json.Unmarshal([]byte(itemRaw), &obj)
+		out = append(out, value{data: obj, raw: itemRaw, env: v.env})
+	}
+	return out
 }
 
 var (
@@ -412,7 +632,7 @@ func htmlSelect(root *goquery.Selection, rule string, scalar bool) (*goquery.Sel
 			}
 			sub := cur.FindMatcher(matcher)
 			if sub.Length() == 0 && cur.FilterMatcher(matcher).Length() > 0 {
-				cur = cur.FilterMatcher(matcher)
+				sub = cur.FilterMatcher(matcher)
 			} else {
 				cur = sub
 			}
@@ -423,15 +643,18 @@ func htmlSelect(root *goquery.Selection, rule string, scalar bool) (*goquery.Sel
 	}
 	return cur, attr, nil
 }
+
 func plainText(n *html.Node) string {
 	var b strings.Builder
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode {
 			switch n.Data {
-			case "script", "style", "noscript", "iframe", "object", "svg":
+			case "script", "style", "noscript", "iframe", "object", "svg", "template", "head":
 				return
-			case "br":
+			case "p", "div", "li", "section", "article", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "blockquote", "dd", "dl":
+				b.WriteByte('\n')
+			case "br", "hr":
 				b.WriteByte('\n')
 				return
 			}
@@ -444,7 +667,7 @@ func plainText(n *html.Node) string {
 		}
 		if n.Type == html.ElementNode {
 			switch n.Data {
-			case "p", "div", "li", "section", "article", "h1", "h2", "h3", "tr", "blockquote":
+			case "p", "div", "li", "section", "article", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "blockquote", "dd", "dl":
 				b.WriteByte('\n')
 			}
 		}
@@ -458,74 +681,6 @@ func plainText(n *html.Node) string {
 		}
 	}
 	return strings.Join(lines, "\n")
-}
-func jsonPath(root any, path string) ([]any, error) {
-	if path == "" || path[0] != '$' {
-		return nil, fmt.Errorf("JSONPath must start with $")
-	}
-	values := []any{root}
-	rest := path[1:]
-	for rest != "" {
-		var key string
-		index := -1
-		wild := false
-		if rest[0] == '.' {
-			rest = rest[1:]
-			i := 0
-			for i < len(rest) && (rest[i] == '_' || rest[i] == '-' || rest[i] >= 'a' && rest[i] <= 'z' || rest[i] >= 'A' && rest[i] <= 'Z' || rest[i] >= '0' && rest[i] <= '9') {
-				i++
-			}
-			if i == 0 {
-				return nil, fmt.Errorf("unsupported JSONPath %q", path)
-			}
-			key = rest[:i]
-			rest = rest[i:]
-		} else if rest[0] == '[' {
-			end := strings.IndexByte(rest, ']')
-			if end < 0 {
-				return nil, fmt.Errorf("invalid JSONPath")
-			}
-			token := strings.TrimSpace(rest[1:end])
-			rest = rest[end+1:]
-			if token == "*" {
-				wild = true
-			} else if len(token) >= 2 && (token[0] == '\'' && token[len(token)-1] == '\'' || token[0] == '"' && token[len(token)-1] == '"') {
-				key = token[1 : len(token)-1]
-				if key == "" || strings.ContainsAny(key, "\\\"'") {
-					return nil, fmt.Errorf("unsupported JSONPath quoted key %q", token)
-				}
-			} else {
-				var err error
-				index, err = strconv.Atoi(token)
-				if err != nil || index < 0 {
-					return nil, fmt.Errorf("unsupported JSONPath subscript %q", token)
-				}
-			}
-		} else {
-			return nil, fmt.Errorf("unsupported JSONPath %q", path)
-		}
-		var next []any
-		for _, v := range values {
-			if key != "" {
-				if obj, ok := v.(map[string]any); ok {
-					if x, exists := obj[key]; exists {
-						next = append(next, x)
-					}
-				}
-			} else if arr, ok := v.([]any); ok {
-				if wild {
-					next = append(next, arr...)
-				} else if index >= 0 && index < len(arr) {
-					next = append(next, arr[index])
-				}
-			}
-		}
-		values = next
-		if len(values) > 20000 {
-			return nil, fmt.Errorf("JSONPath exceeds item limit")
-		}
-	}
-	return values, nil
 }
 
 func sanitizeRegex(pattern string) string {
@@ -547,7 +702,7 @@ func sanitizeRegex(pattern string) string {
 
 func cleanContent(text, replaceRegex string) (string, error) {
 	if strings.TrimSpace(replaceRegex) == "" {
-		return text, nil
+		return PurifyContent(text), nil
 	}
 	lines := strings.Split(replaceRegex, "\n")
 	if len(lines) > 100 {
@@ -583,6 +738,9 @@ func cleanContent(text, replaceRegex string) (string, error) {
 		if err != nil {
 			continue
 		}
+		if strings.HasSuffix(replacement, "###") {
+			replacement = strings.TrimSuffix(replacement, "###")
+		}
 		if len(parts) > 2 || strings.HasSuffix(line, "###") {
 			loc := re.FindStringIndex(text)
 			if loc != nil {
@@ -592,5 +750,49 @@ func cleanContent(text, replaceRegex string) (string, error) {
 			text = re.ReplaceAllString(text, replacement)
 		}
 	}
+	text = PurifyContent(text)
 	return strings.TrimSpace(text), nil
+}
+
+func normalizeContentParagraphs(text string) string {
+	if text == "" {
+		return ""
+	}
+	rawLines := strings.Split(text, "\n")
+	var cleanedLines []string
+	for _, l := range rawLines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed != "" {
+			cleanedLines = append(cleanedLines, trimmed)
+		}
+	}
+	if len(cleanedLines) == 0 {
+		return ""
+	}
+	var merged []string
+	isIsolatedPunctuation := func(s string) bool {
+		if s == "" {
+			return false
+		}
+		runes := []rune(s)
+		if len(runes) > 3 {
+			return false
+		}
+		for _, r := range runes {
+			switch r {
+			case '”', '’', '」', '』', '"', '\'', '！', '!', '？', '?', '。', '；', ';', '：', ':', '…', '—':
+			default:
+				return false
+			}
+		}
+		return true
+	}
+	for _, line := range cleanedLines {
+		if len(merged) > 0 && isIsolatedPunctuation(line) {
+			merged[len(merged)-1] = merged[len(merged)-1] + line
+			continue
+		}
+		merged = append(merged, line)
+	}
+	return strings.Join(merged, "\n\n")
 }

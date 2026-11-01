@@ -12,34 +12,64 @@ import {
   Library,
   ChevronLeft,
   ChevronRight,
-  Trash2
+  Trash2,
+  LayoutGrid,
+  List as ListIcon,
+  Tag,
+  CheckCircle2,
+  AlertCircle
 } from 'lucide-vue-next'
 import { api, id, message } from '../api'
 import { removeBookCache } from '../offline'
 import { showConfirm } from '../confirm'
-import type { Book } from '../types'
+import type { Book, Chapter } from '../types'
 import BookCover from './BookCover.vue'
+
+// 模块级书架与续读标题缓存，避免切页、阅读器退回时触发骨架屏与白屏闪烁
+let cachedBooks: Book[] = []
+let cachedContinuingTitle = ''
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('session-expired', () => {
+    cachedBooks = []
+    cachedContinuingTitle = ''
+  })
+}
 
 const props = defineProps<{ importMode: boolean }>()
 
-const books = ref<Book[]>([])
-const loading = ref(true)
+const books = ref<Book[]>(cachedBooks)
+const loading = ref(cachedBooks.length === 0)
+const refreshing = ref(false)
 const error = ref('')
 const notice = ref('')
 const removingId = ref('')
 const query = ref('')
 const group = ref('')
 const sort = ref('recent')
+const viewMode = ref<'grid' | 'list'>('grid')
 const file = ref<File | null>(null)
 const importing = ref(false)
 const dragging = ref(false)
 const imported = ref<Book | null>(null)
 
+// 续读卡片的最新章节名称
+const continuingChapterTitle = ref(cachedContinuingTitle)
+
 // 分页控制
 const page = ref(1)
 const pageSize = ref(5)
 
+function cleanAuthor(author: string): string {
+  if (!author) return '佚名'
+  return author.replace(/^(作者|著者|编著|著)[:：\s]*/i, '').trim() || '佚名'
+}
+
 const groups = computed(() => [...new Set(books.value.map(b => b.group).filter(Boolean))])
+
+const isDuplicateTitle = (title: string) => {
+  return books.value.filter(b => b.title.trim() === title.trim()).length > 1
+}
 
 const filtered = computed(() => {
   const list = books.value.filter(
@@ -52,7 +82,6 @@ const filtered = computed(() => {
 })
 
 const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize.value)))
-
 const pagedBooks = computed(() => {
   const start = (page.value - 1) * pageSize.value
   return filtered.value.slice(start, start + pageSize.value)
@@ -64,15 +93,54 @@ watch([query, group, sort], () => {
 
 const continuing = computed(() => books.value.find(b => b.progress))
 
-async function load() {
-  loading.value = true
+async function fetchContinuingChapterTitle(bookItem: Book) {
+  if (!bookItem?.id || !bookItem.progress?.chapterId) {
+    continuingChapterTitle.value = ''
+    cachedContinuingTitle = ''
+    return
+  }
+  try {
+    const chapters = await api<Chapter[]>(`/books/${id(bookItem.id)}/chapters`)
+    const target = chapters?.find(c => c.id === bookItem.progress?.chapterId)
+    if (target) {
+      continuingChapterTitle.value = target.title
+      cachedContinuingTitle = target.title
+    } else {
+      continuingChapterTitle.value = ''
+      cachedContinuingTitle = ''
+    }
+  } catch {
+    // 保留已有缓存标题，避免网络抖动导致闪现
+  }
+}
+
+watch(continuing, (newVal) => {
+  if (newVal) {
+    fetchContinuingChapterTitle(newVal)
+  }
+}, { immediate: true })
+
+async function load(isManual = false) {
+  if (books.value.length === 0) {
+    loading.value = true
+  } else if (isManual) {
+    refreshing.value = true
+  }
   error.value = ''
   try {
-    books.value = (await api<Book[]>('/books')) || []
+    const list = (await api<Book[]>('/books')) || []
+    books.value = list
+    cachedBooks = list
+    if (continuing.value) {
+      fetchContinuingChapterTitle(continuing.value)
+    }
   } catch (e) {
-    error.value = message(e)
+    if (books.value.length === 0) {
+      error.value = message(e)
+    }
   } finally {
     loading.value = false
+    refreshing.value = false
   }
 }
 
@@ -82,12 +150,16 @@ function select(f?: File) {
   imported.value = null
   file.value = null
   if (!f) return
-  if (!/\.(txt|epub)$/i.test(f.name)) {
+  if (!/\\.(txt|epub)$/i.test(f.name)) {
     error.value = '请选择 .txt 或 .epub 文件。'
     return
   }
   if (!f.size) {
-    error.value = '文件为空，请选择包含正文的文件。'
+    error.value = '文件为空，请选择包含有效正文的文件。'
+    return
+  }
+  if (f.size > 100 * 1024 * 1024) {
+    error.value = '文件超过服务端 100MB 限制，请精简后重新上传。'
     return
   }
   file.value = f
@@ -107,6 +179,9 @@ async function upload() {
   body.append('file', file.value)
   try {
     imported.value = await api<Book>('/imports', 'POST', body)
+    if (imported.value) {
+      cachedBooks = [imported.value, ...cachedBooks.filter(b => b.id !== imported.value?.id)]
+    }
     file.value = null
   } catch (e) {
     error.value = message(e)
@@ -123,7 +198,7 @@ async function removeBook(book: Book) {
   if (removingId.value) return
   const ok = await showConfirm({
     title: '移除书籍',
-    message: `确定从书架移除《${book.title}》吗？阅读进度、书签和本地文件也会被删除，此操作无法撤销。`,
+    message: `确定从书架移除《${book.title}》吗？阅读进度、书签和本地缓存也将一并清除，此操作不可撤销。`,
     confirmText: '确认移除',
     cancelText: '取消',
     danger: true
@@ -136,6 +211,13 @@ async function removeBook(book: Book) {
     await api(`/books/${id(book.id)}`, 'DELETE')
     await removeBookCache(book.id)
     books.value = books.value.filter(b => b.id !== book.id)
+    cachedBooks = books.value
+    if (continuing.value) {
+      fetchContinuingChapterTitle(continuing.value)
+    } else {
+      continuingChapterTitle.value = ''
+      cachedContinuingTitle = ''
+    }
     if (pagedBooks.value.length === 0 && page.value > 1) {
       page.value = Math.max(1, totalPages.value)
     }
@@ -160,91 +242,156 @@ onMounted(() => {
   <header :class="['page-header', importMode ? 'import-header' : 'shelf-header']">
     <div>
       <span class="eyebrow">{{ importMode ? 'IMPORT' : 'SHELF' }}</span>
-      <h1>{{ importMode ? '导入书籍' : '我的书架' }}<span v-if="!importMode && !loading" class="count">{{ books.length }}</span></h1>
-      <p>{{ importMode ? '从设备导入 TXT 或 EPUB 电子书，即刻加入书架阅读。' : '管理与阅读你的本地与网络藏书。' }}</p>
+      <h1>
+        {{ importMode ? '导入书籍' : '我的书架' }}
+        <span v-if="!importMode && (!loading || books.length)" class="count">{{ books.length }}</span>
+      </h1>
+      <p>{{ importMode ? '支持导入本地 TXT 或 EPUB 电子书，自动智能切分卷章。' : '中性清爽的个人阅读书架，随时开启沉浸阅读。' }}</p>
     </div>
-    <a v-if="!importMode" class="button primary" href="#/import"><Plus :size="18" />导入书籍</a>
+    <div class="header-actions">
+      <a v-if="!importMode" class="button primary" href="#/import">
+        <Plus :size="17" />导入书籍
+      </a>
+    </div>
   </header>
 
   <div v-if="error" class="error" role="alert">
-    {{ error }} <button v-if="!importMode" class="text-button" @click="load">重试</button>
+    {{ error }} <button v-if="!importMode" class="text-button" @click="load()">重试</button>
   </div>
   <div v-if="notice" class="success" role="status">
     {{ notice }}
   </div>
 
+  <!-- 导入页面分步向导模式 -->
   <template v-if="importMode">
-    <section class="import-grid">
-      <form class="panel import-panel" @submit.prevent="upload">
-        <div :class="['dropzone', { dragging, 'has-file': !!file }]" @dragover.prevent="dragging = true" @dragleave.prevent="dragging = false" @drop.prevent="dropped">
-          <span class="round-icon"><Upload :size="26" /></span>
-          <h2>{{ file ? file.name : '选择或拖放电子书' }}</h2>
-          <p>{{ file ? `${(file.size / 1024 / 1024).toFixed(2)} MB · 已准备好导入` : '拖放 TXT / EPUB 文件到这里，或点击下方按钮从设备中选择' }}</p>
-          <label class="button secondary file-picker">
+    <section class="import-stepper-wrap">
+      <form class="panel import-stepper-panel" @submit.prevent="upload">
+        <div class="stepper-status-badge">
+          <span class="step-num">{{ file ? '步骤 2 / 2' : '步骤 1 / 2' }}</span>
+          <span class="step-desc">{{ file ? '确认文件信息并导入书架' : '选择本地电子书文件' }}</span>
+        </div>
+
+        <div
+          :class="['dropzone', { dragging, 'has-file': !!file }]"
+          @dragover.prevent="dragging = true"
+          @dragleave.prevent="dragging = false"
+          @drop.prevent="dropped"
+        >
+          <span class="round-icon">
+            <Upload :size="26" />
+          </span>
+          <h2>{{ file ? file.name : '选择或拖放电子书到此处' }}</h2>
+          <p>
+            {{
+              file
+                ? `${(file.size / 1024 / 1024).toFixed(2)} MB · 格式已验证，随时可导入`
+                : '支持 TXT 与 EPUB 格式，单文件上限 100MB'
+            }}
+          </p>
+
+          <label class="button secondary file-picker-trigger">
             <FileText :size="16" />
-            <span>{{ file ? '重新选择文件' : '选择本地文件 (.txt / .epub)' }}</span>
-            <input type="file" accept=".txt,.epub" :disabled="importing" @change="select(($event.target as HTMLInputElement).files?.[0])" />
+            <span>{{ file ? '重新选择其他文件' : '选择本地文件 (.txt / .epub)' }}</span>
+            <input
+              type="file"
+              accept=".txt,.epub"
+              :disabled="importing"
+              @change="select(($event.target as HTMLInputElement).files?.[0])"
+            />
           </label>
         </div>
-        <button class="primary wide import-submit-btn" :disabled="!file || importing">
-          <LoaderCircle v-if="importing" class="spin" :size="18" />
-          <Upload v-else :size="18" />
-          {{ importing ? '正在上传并解析，请稍候…' : '导入到我的书架' }}
-        </button>
-        <p class="fine-print">导入完成后直接加入书架。文件大小与章节限制由服务器校验。</p>
+
+        <!-- 主导入按钮：未选文件时不误导，选好后高亮 -->
+        <div class="import-action-bar">
+          <button
+            v-if="file"
+            type="submit"
+            class="button primary wide import-execute-btn"
+            :disabled="importing"
+          >
+            <LoaderCircle v-if="importing" class="spin" :size="18" />
+            <Upload v-else :size="18" />
+            {{ importing ? '正在上传并智能解析章节…' : '导入到我的书架' }}
+          </button>
+          <p v-else class="import-idle-tip">请先点击上方按钮选择 TXT 或 EPUB 文件</p>
+        </div>
+
+        <p class="fine-print">文件大小上限 100MB，服务端将自动校验 UTF-8/GBK 编码并建立章节索引。</p>
       </form>
 
-      <aside class="panel import-notes">
+      <aside class="panel import-format-card">
         <div class="import-notes-head">
-          <span class="eyebrow">FORMATS</span>
-          <h2>支持格式说明</h2>
+          <span class="eyebrow">GUIDELINES</span>
+          <h2>格式与规格支持</h2>
         </div>
-        <div class="import-note-list">
-          <div class="import-note-card">
-            <span class="import-note-icon"><FileText :size="20" /></span>
-            <div class="import-note-text">
+        <div class="import-spec-list">
+          <div class="import-spec-item">
+            <span class="spec-icon"><FileText :size="18" /></span>
+            <div>
               <h3>TXT 纯文本</h3>
-              <p>支持 UTF-8 与 GBK 编码，智能识别卷章目录。</p>
+              <p>支持 UTF-8 与 GBK 编码，智能识别“第X章/卷”并自动生成目录。</p>
             </div>
           </div>
-          <div class="import-note-card">
-            <span class="import-note-icon"><BookOpen :size="20" /></span>
-            <div class="import-note-text">
+          <div class="import-spec-item">
+            <span class="spec-icon"><BookOpen :size="18" /></span>
+            <div>
               <h3>EPUB 电子书</h3>
-              <p>解析目录与正文，以清爽护眼排版呈现。</p>
+              <p>支持标准 EPUB 2/3 标准电子书，解析原书完整目录与段落。</p>
             </div>
           </div>
         </div>
-        <p class="fine-print">请仅导入你拥有合法阅读权利的内容。</p>
+        <p class="fine-print">请确认仅导入你合法拥有的书籍或授权作品。</p>
       </aside>
     </section>
 
+    <!-- 导入成功反馈 -->
     <div v-if="imported" class="success import-success" role="status">
       <div>
-        <strong>《{{ imported.title }}》已加入书架</strong>
-        <p>共 {{ imported.chapterCount }} 章，已成功入架。</p>
+        <strong>《{{ imported.title }}》已成功加入书架</strong>
+        <p>全书共解析 {{ imported.chapterCount }} 章，已就绪。</p>
       </div>
       <div class="actions">
-        <a class="button primary" :href="`#/read/${id(imported.id)}`"><BookOpen :size="18" />立即阅读</a>
-        <a class="button secondary" :href="`#/book/${id(imported.id)}`">查看目录<ArrowUpRight :size="17" /></a>
+        <a class="button primary" :href="`#/read/${id(imported.id)}`">
+          <BookOpen :size="18" />立即阅读
+        </a>
+        <a class="button secondary" :href="`#/book/${id(imported.id)}`">
+          查看详情与目录<ArrowUpRight :size="17" />
+        </a>
       </div>
     </div>
   </template>
 
+  <!-- 正常书架页面 -->
   <template v-else>
-    <section v-if="continuing && !loading" class="continue-card">
-      <div>
-        <span class="eyebrow continue-desktop-label">CONTINUE READING</span><span class="continue-mobile-label">接着读</span>
+    <!-- 续读卡片（增加章节名与明确进度表达，消除歧义） -->
+    <section v-if="continuing && (!loading || books.length)" class="continue-card">
+      <div class="continue-card-content">
+        <span class="eyebrow">CONTINUE READING</span>
         <h2>{{ continuing.title }}</h2>
-        <p>{{ continuing.author || '佚名' }}<span class="dot">·</span>本章已读 {{ Math.round((continuing.progress?.position || 0) * 100) }}%</p>
-        <a class="button primary continue-action" :href="`#/read/${id(continuing.id)}`"><BookOpen :size="18" />继续阅读</a>
-      </div>
-      <div class="continue-decoration" aria-hidden="true">
-        <span>继续阅读</span>
-        <BookOpen :size="110" :stroke-width="0.7" />
+        <p class="continue-chapter-info">
+          <span class="continue-author">{{ cleanAuthor(continuing.author) }}</span>
+          <span class="dot">·</span>
+          <span class="continue-chapter-title">{{ continuingChapterTitle || '当前章节' }}</span>
+          <span class="dot">·</span>
+          <span class="continue-progress-val">本章已读 {{ Math.round((continuing.progress?.position || 0) * 100) }}%</span>
+        </p>
+        <div class="continue-progress-bar-wrap">
+          <div
+            class="continue-progress-bar-fill"
+            :style="{ width: `${Math.round((continuing.progress?.position || 0) * 100)}%` }"
+            :title="`本章进度：${Math.round((continuing.progress?.position || 0) * 100)}%`"
+          ></div>
+        </div>
+        <div class="continue-action-row">
+          <a class="button primary continue-action" :href="`#/read/${id(continuing.id)}`">
+            <BookOpen :size="18" />继续阅读
+          </a>
+          <a class="button secondary" :href="`#/book/${id(continuing.id)}`">书籍详情</a>
+        </div>
       </div>
     </section>
 
+    <!-- 工具栏：分组过滤、搜索、排序、视图切换 -->
     <div class="library-toolbar">
       <div class="tabs">
         <button :class="{ selected: !group }" @click="group = ''">全部藏书</button>
@@ -252,54 +399,86 @@ onMounted(() => {
       </div>
       <div class="toolbar-controls">
         <label class="search-input">
-          <Search :size="17" />
-          <input v-model="query" aria-label="筛选书架" placeholder="搜索书名、作者" />
+          <Search :size="16" />
+          <input v-model="query" aria-label="筛选书架藏书" placeholder="搜索书名或作者…" />
         </label>
-        <select v-model="sort" aria-label="排序方式">
-          <option value="recent">最近加入</option>
-          <option value="title">书名排序</option>
+        <select v-model="sort" aria-label="书架排序方式">
+          <option value="recent">最近阅读/加入</option>
+          <option value="title">书名字母排序</option>
         </select>
-        <button class="icon-button" @click="load" :disabled="loading" aria-label="刷新书架">
-          <RefreshCw :size="17" />
+        <div class="view-mode-toggle" role="group" aria-label="视图切换">
+          <button
+            type="button"
+            :class="['icon-button', { active: viewMode === 'grid' }]"
+            @click="viewMode = 'grid'"
+            title="网格视图"
+            aria-label="网格视图"
+          >
+            <LayoutGrid :size="16" />
+          </button>
+          <button
+            type="button"
+            :class="['icon-button', { active: viewMode === 'list' }]"
+            @click="viewMode = 'list'"
+            title="列表视图"
+            aria-label="列表视图"
+          >
+            <ListIcon :size="16" />
+          </button>
+        </div>
+        <button class="icon-button" @click="load(true)" :disabled="loading || refreshing" aria-label="刷新书架" title="刷新书架">
+          <RefreshCw :class="{ spin: refreshing }" :size="16" />
         </button>
       </div>
     </div>
 
-    <div v-if="loading" class="book-grid" aria-label="正在加载书架" aria-busy="true">
-      <div v-for="n in 5" :key="n" class="skeleton-book">
+    <!-- 加载骨架屏 -->
+    <!-- 加载骨架屏：仅在无任何缓存书籍且首次加载时展示 -->
+    <div v-if="loading && !books.length" class="book-grid" aria-label="正在加载书架" aria-busy="true">
+      <div v-for="n in 6" :key="n" class="skeleton-book">
         <div class="skeleton"></div>
         <span class="skeleton"></span>
       </div>
     </div>
 
-    <section v-else-if="!books.length && !error" class="empty shelf-empty">
+    <!-- 空书架 -->
+    <section v-else-if="!books.length && !loading && !error" class="empty shelf-empty">
       <span class="round-icon"><Library :size="32" /></span>
-      <span class="eyebrow">EMPTY</span>
-      <h2>书架暂无书籍</h2>
-      <p>导入本地 TXT/EPUB 电子书，或通过搜索添加网络小说开始阅读。</p>
+      <span class="eyebrow">EMPTY SHELF</span>
+      <h2>书架暂无藏书</h2>
+      <p>你可以导入本地 TXT / EPUB 电子书，或通过全网书源搜索添加书籍。</p>
       <div class="actions">
         <a class="button primary" href="#/import"><Plus :size="18" />导入书籍</a>
-        <a class="button secondary" href="#/search">搜索书籍<ArrowUpRight :size="17" /></a>
+        <a class="button secondary" href="#/search">搜索网络书籍<ArrowUpRight :size="17" /></a>
       </div>
     </section>
 
-    <section v-else-if="!filtered.length && !error" class="empty">
+    <!-- 筛选无匹配结果：联动搜索引导 -->
+    <section v-else-if="!filtered.length && !error" class="empty filter-empty">
       <Search :size="32" />
-      <h2>没有找到匹配的藏书</h2>
-      <p>试试其他书名、作者或分组。</p>
-      <button @click="query = ''; group = ''">清除筛选</button>
+      <h2>书架中未找到“{{ query }}”</h2>
+      <p>当前书架没有匹配的藏书。你可以清除筛选，或者直接去全网搜索本书。</p>
+      <div class="actions">
+        <a class="button primary" :href="`#/search?q=${encodeURIComponent(query)}`">
+          去搜索《{{ query }}》<ArrowUpRight :size="17" />
+        </a>
+        <button class="button secondary" @click="query = ''; group = ''">清除筛选条件</button>
+      </div>
     </section>
 
+    <!-- 书籍列表展示区 -->
     <template v-else>
-      <div class="book-grid">
+      <!-- 网格视图 -->
+      <div v-if="viewMode === 'grid'" class="book-grid">
         <a
           v-for="(book, index) in pagedBooks"
           :key="book.id"
           :href="`#/book/${id(book.id)}`"
           class="book-card"
-          :style="{ '--stagger': `${Math.min(index, 8) * 25}ms` }"
         >
           <BookCover :title="book.title" :kind="book.kind" :index="index" />
+
+          <!-- 删除按钮 -->
           <button
             type="button"
             class="book-remove-btn"
@@ -311,19 +490,34 @@ onMounted(() => {
             <LoaderCircle v-if="removingId === book.id" class="spin" :size="14" />
             <Trash2 v-else :size="14" />
           </button>
+
           <div class="book-meta">
-            <h3>{{ book.title }}</h3>
-            <p>{{ book.author || '佚名' }}</p>
+            <!-- 来源标签：同名书显式高亮区分 -->
+            <div class="book-source-tag-row">
+              <span
+                :class="['book-source-tag', { 'duplicate-source': isDuplicateTitle(book.title) }]"
+                :title="isDuplicateTitle(book.title) ? '书架存在多本同名书籍，这是来自此来源的版本' : ''"
+              >
+                {{ book.sourceName || (book.kind === 'local' ? '本地导入' : '网络书源') }}
+              </span>
+            </div>
+
+            <h3 :title="book.title">{{ book.title }}</h3>
+            <p class="book-author" :title="cleanAuthor(book.author)">{{ cleanAuthor(book.author) }}</p>
+
             <div class="book-status">
               <span>
-                {{ book.progress ? '阅读中' : '未开始' }}
-                <template v-if="book.progress"> · 本章 {{ Math.round(book.progress.position * 100) }}%</template>
+                {{ book.progress ? '阅读中' : '未读' }}
+                <template v-if="book.progress"> · {{ Math.round(book.progress.position * 100) }}%</template>
               </span>
               <span>{{ book.chapterCount }} 章</span>
             </div>
+
             <div class="progress-track" v-if="book.progress">
               <span :style="{ width: `${book.progress.position * 100}%` }"></span>
             </div>
+
+            <!-- 操作按钮：继续阅读不换行，目录详情次级点击 -->
             <div class="book-card-quick-actions">
               <button
                 type="button"
@@ -333,21 +527,69 @@ onMounted(() => {
                 <BookOpen :size="13" />
                 <span>{{ book.progress ? '继续阅读' : '立即阅读' }}</span>
               </button>
-              <span class="book-quick-detail-hint">目录 · 详情</span>
+              <span class="book-quick-detail-hint">详情</span>
             </div>
           </div>
         </a>
       </div>
 
+      <!-- 紧凑列表视图（更适合书多时的快速扫读） -->
+      <div v-else class="book-list">
+        <div
+          v-for="book in pagedBooks"
+          :key="book.id"
+          class="book-list-item"
+        >
+          <div class="book-list-main" @click="openReaderDirect(book.id)">
+            <div class="book-list-titles">
+              <h3 :title="book.title">{{ book.title }}</h3>
+              <div class="book-list-sub">
+                <span class="book-author">{{ cleanAuthor(book.author) }}</span>
+                <span class="dot">·</span>
+                <span :class="['book-source-tag', { 'duplicate-source': isDuplicateTitle(book.title) }]">
+                  {{ book.sourceName || (book.kind === 'local' ? '本地导入' : '网络书源') }}
+                </span>
+                <span class="dot">·</span>
+                <span class="book-chapters">{{ book.chapterCount }} 章</span>
+              </div>
+            </div>
+            <div class="book-list-progress">
+              <span v-if="book.progress">已读 {{ Math.round(book.progress.position * 100) }}%</span>
+              <span v-else class="muted">未读</span>
+            </div>
+          </div>
+          <div class="book-list-actions">
+            <button
+              type="button"
+              class="button primary small"
+              @click="openReaderDirect(book.id)"
+            >
+              <BookOpen :size="14" />
+              <span>{{ book.progress ? '继续阅读' : '开始阅读' }}</span>
+            </button>
+            <a class="button secondary small" :href="`#/book/${id(book.id)}`">目录详情</a>
+            <button
+              type="button"
+              class="icon-button danger-icon small"
+              :disabled="removingId === book.id"
+              @click="removeBook(book)"
+              title="从书架移除"
+            >
+              <LoaderCircle v-if="removingId === book.id" class="spin" :size="14" />
+              <Trash2 v-else :size="14" />
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- 书架分页栏 -->
       <div class="pagination-bar" v-if="filtered.length > pageSize">
         <div class="pagination-info">
-          <span>第 {{ page }} / {{ totalPages }} 页 (共 {{ filtered.length }} 本藏书)</span>
-          <select v-model="pageSize" @change="page = 1" aria-label="书架每页显示本数" class="page-size-select">
-            <option :value="3">3 本/页</option>
-            <option :value="5">5 本/页</option>
-            <option :value="10">10 本/页</option>
-            <option :value="20">20 本/页</option>
+          <span>第 {{ page }} / {{ totalPages }} 页 (共 {{ filtered.length }} 本)</span>
+          <select v-model="pageSize" @change="page = 1" aria-label="每页显示本数" class="page-size-select">
+            <option :value="6">6 本/页</option>
+            <option :value="12">12 本/页</option>
+            <option :value="24">24 本/页</option>
           </select>
         </div>
         <div class="pagination-controls">
@@ -370,7 +612,7 @@ onMounted(() => {
       </div>
 
       <footer class="shelf-footer">
-        共 {{ filtered.length }} 本藏书
+        当前书架共有 {{ filtered.length }} 本藏书
       </footer>
     </template>
   </template>

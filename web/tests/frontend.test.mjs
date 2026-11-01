@@ -237,3 +237,72 @@ test('reader, book detail, search, and shelf support human-centric reading flow,
   assert.match(css, /\.mode-selector-grid/)
   assert.match(css, /\.toggle-option-card/)
 })
+
+test('search cache preserves state across navigation and resets on logout', async () => {
+  const { createRenderer, defineComponent, h, KeepAlive, ref, nextTick, onUnmounted } = await import('@vue/runtime-core')
+  const appSource = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
+  assert.match(appSource, /<KeepAlive include="SearchView" :max="1">/)
+  assert.match(appSource, /<SearchView v-else-if="parts\[0\]==='search'"\/>/)
+  const searchSource = await readFile(new URL('../src/components/SearchView.vue', import.meta.url), 'utf8')
+  assert.match(searchSource, /onDeactivated\(\(\) => \{\s*window.removeEventListener\('keydown', handleKeydown\)/)
+  assert.match(searchSource, /onUnmounted\(\(\) => \{[\s\S]*?abortCtrl.abort\(\)/)
+  const node = () => ({ children: [], parent: null })
+  const renderer = createRenderer({
+    createElement: node, createText: node, createComment: node,
+    setText() {}, setElementText() {}, patchProp() {},
+    parentNode: n => n.parent,
+    nextSibling: n => n.parent?.children[n.parent.children.indexOf(n) + 1] || null,
+    insert(n, parent, anchor = null) {
+      if (n.parent) n.parent.children.splice(n.parent.children.indexOf(n), 1)
+      n.parent = parent
+      const index = anchor ? parent.children.indexOf(anchor) : -1
+      if (index < 0) parent.children.push(n); else parent.children.splice(index, 0, n)
+    },
+    remove(n) { if (n.parent) n.parent.children.splice(n.parent.children.indexOf(n), 1); n.parent = null }
+  })
+  let mounts = 0, disposals = 0, state
+  const Search = defineComponent({ name: 'SearchView', setup() {
+    mounts++
+    state = ref({ keyword: '', results: [], page: 1, selected: [], expanded: false })
+    onUnmounted(() => disposals++)
+    return () => h('div', JSON.stringify(state.value))
+  } })
+  const Library = defineComponent({ name: 'LibraryView', setup: () => () => h('div', 'library') })
+  const route = ref('search'), loggedIn = ref(true)
+  const app = renderer.createApp({ setup: () => () => loggedIn.value
+    ? h(KeepAlive, { include: 'SearchView', max: 1 }, { default: () => h(route.value === 'search' ? Search : Library) })
+    : h('div', 'login') })
+  app.mount(node())
+  const expected = { keyword: '测试小说', results: ['结果一', '结果二'], page: 2, selected: ['source-a'], expanded: true }
+  state.value = expected
+  route.value = 'library'; await nextTick()
+  assert.equal(disposals, 0)
+  route.value = 'search'; await nextTick()
+  assert.equal(mounts, 1)
+  assert.deepEqual(state.value, expected)
+  loggedIn.value = false; await nextTick()
+  assert.equal(disposals, 1)
+  loggedIn.value = true; await nextTick()
+  assert.equal(mounts, 2)
+  assert.equal(state.value.keyword, '')
+  app.unmount()
+})
+
+test('library shelf prevents white-screen flash with module-level cache and non-blocking background refresh', async () => {
+  const librarySource = await readFile(new URL('../src/components/LibraryView.vue', import.meta.url), 'utf8')
+  const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
+
+  // Verify module-level cache to ensure instantaneous rendering on tab return
+  assert.match(librarySource, /let cachedBooks:\s*Book\[\]\s*=\s*\[\]/)
+  assert.match(librarySource, /const books = ref<Book\[\]>\(cachedBooks\)/)
+  assert.match(librarySource, /const loading = ref\(cachedBooks\.length === 0\)/)
+
+  // Verify skeleton placeholder is hidden when cached books exist
+  assert.match(librarySource, /v-if="loading && !books\.length"/)
+
+  // Verify continue card does not vanish during background load
+  assert.match(librarySource, /v-if="continuing && \(!loading \|\| books\.length\)"/)
+
+  // Verify book cards do not force opacity 0 enter animation
+  assert.doesNotMatch(css, /\.book-card\s*\{[^}]*animation:\s*enter/)
+})

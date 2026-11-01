@@ -49,14 +49,14 @@ func (s *Server) authenticate(r *http.Request) (User, string, error) {
 		return u, "", fail(401, "UNAUTHORIZED", "请先登录")
 	}
 	var csrf string
-	e = s.db.QueryRowContext(r.Context(), "SELECT u.id,u.username,u.role,u.status,u.must_change,u.created_at,s.csrf FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>UTC_TIMESTAMP() AND u.status='active'", digest(cookie.Value)).Scan(&u.ID, &u.Username, &u.Role, &u.Status, &u.MustChangePassword, &u.CreatedAt, &csrf)
+	e = s.db.QueryRowContext(r.Context(), "SELECT u.id,u.username,u.role,u.status,u.must_change,u.created_at,s.csrf FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND u.status='active'", digest(cookie.Value), time.Now().UTC()).Scan(&u.ID, &u.Username, &u.Role, &u.Status, &u.MustChangePassword, &u.CreatedAt, &csrf)
 	if errors.Is(e, sql.ErrNoRows) {
 		return u, "", fail(401, "UNAUTHORIZED", "登录已过期")
 	}
 	return u, csrf, e
 }
 func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, u User) error {
-	_, _ = s.db.ExecContext(r.Context(), "DELETE FROM sessions WHERE expires_at <= UTC_TIMESTAMP() LIMIT 100")
+	_, _ = s.db.ExecContext(r.Context(), "DELETE FROM sessions WHERE expires_at <= ?", time.Now().UTC())
 	token := id() + id()
 	csrf := id() + id()
 	_, e := s.db.ExecContext(r.Context(), "INSERT INTO sessions(token_hash,user_id,csrf,expires_at) VALUES(?,?,?,?)", digest(token), u.ID, csrf, time.Now().UTC().Add(7*24*time.Hour))

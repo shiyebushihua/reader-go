@@ -94,3 +94,17 @@ export async function streamSearch(
     }
   }
 }
+export const getBookSources = (bookId: string) => api<import('./types').BookSourceCandidate[]>(`/books/${encodeURIComponent(bookId)}/sources`)
+export const changeBookSource = (bookId: string, payload: { sourceId: string; url: string; currentChapterTitle?: string }) =>
+  api<{ ok: boolean; currentChapterId: string; chapterCount: number; sourceName: string }>(`/books/${encodeURIComponent(bookId)}/change-source`, 'POST', payload)
+export const cacheBookChapters = (bookId: string, payload: { fromOrdinal?: number; count?: number; chapterIds?: string[] }) =>
+  api<{ ok: boolean; cached: number; skipped: number; total: number }>(`/books/${encodeURIComponent(bookId)}/cache`, 'POST', payload)
+export const getBookCacheStatus = (bookId: string) =>
+  api<import('./types').BookCacheStatus>(`/books/${encodeURIComponent(bookId)}/cache/status`)
+
+export const getBookmarks = (bookId: string) => api<import('./types').Bookmark[]>(`/books/${encodeURIComponent(bookId)}/bookmarks`)
+export const createBookmark = (bookId: string, payload: { chapterId: string; position: number; note: string }) =>
+  api<import('./types').Bookmark>(`/books/${encodeURIComponent(bookId)}/bookmarks`, 'POST', payload)
+export const deleteBookmark = (bookmarkId: string) =>
+  api<{ ok: boolean }>(`/bookmarks/${encodeURIComponent(bookmarkId)}`, 'DELETE')
+export const getExportUrl = (bookId: string) => `/api/v1/books/${encodeURIComponent(bookId)}/export`

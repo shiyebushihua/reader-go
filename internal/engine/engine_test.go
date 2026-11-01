@@ -56,7 +56,7 @@ func TestHTMLFlow(t *testing.T) {
 		t.Fatalf("details: %+v %v", d, err)
 	}
 	text, err := e.Content(context.Background(), s, d.Chapters[0].URL)
-	if err != nil || text != "Hello\nworld\nagain\n\nThe end" {
+	if err != nil || text != "Hello\n\nworld\n\nagain\n\nThe end" {
 		t.Fatalf("content %q %v", text, err)
 	}
 }
@@ -78,10 +78,10 @@ func TestJSONRulesAndOptions(t *testing.T) {
 	if err != nil || spec.Method != "POST" || spec.Body != "q=%E4%B8%AD%E6%96%87&p=2" || spec.Charset != "gbk" || spec.Headers["X-Test"] != "yes" {
 		t.Fatalf("%+v %v", spec, err)
 	}
-	for _, rule := range []string{"@js:result", "@XPath://a", "//a", "$.data.books[?(@.x)]", "$..title"} {
-		if _, err = extract(v, rule); err == nil {
-			t.Errorf("accepted %s", rule)
-		}
+	// Legado 3.0 supports embedded JS, XPath, and JSONPath processing on documents
+	jsVal, err := extract(v, "@js:JSON.parse(result).data.books[0].title")
+	if err != nil || jsVal != "Book" {
+		t.Fatalf("Legado JS extraction failed: %v, got: %s", err, jsVal)
 	}
 	h, _ := document([]byte(`<div class="x"><a>A</a><a>B</a></div>`))
 	s, err = extract(h, "class.x@tag.a.1@text&&.missing@text")
@@ -180,14 +180,14 @@ func TestBoundsGzipCharsetAndSource(t *testing.T) {
 }
 func TestPaginationBudget(t *testing.T) {
 	pages := map[string]string{}
-	for i := 0; i < 11; i++ {
+	for i := 0; i < 51; i++ {
 		pages[fmt.Sprintf("/p%d", i)] = fmt.Sprintf(`<p>Page %d</p><a href="/p%d">next</a>`, i, i+1)
 	}
 	e := fixtureEngine(t, pages)
 	s := Source{Rule: json.RawMessage(`{"bookSourceUrl":"https://books.example","ruleContent":{"content":"p@text","nextContentUrl":"a@href"}}`)}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if _, err := e.Content(ctx, s, "/p0"); err == nil || !strings.Contains(err.Error(), "10 pages") {
+	if _, err := e.Content(ctx, s, "/p0"); err == nil || !strings.Contains(err.Error(), "50 pages") {
 		t.Fatal(err)
 	}
 }
@@ -257,24 +257,15 @@ func TestRedirectCredentialsAndLimit(t *testing.T) {
 }
 
 func TestUnsupportedSourceRulesFailBeforeFetch(t *testing.T) {
-	for _, extra := range []string{
-		`"jsLib":"function f(){}"`, `"loginUrl":"/login"`,
-		`"ruleContent":{"webJs":"run()"}`, `"ruleToc":{"isVip":"a@text"}`,
-		`"ruleSearch":{"name":"@js:result"}`, `"ruleBookInfo":{"intro":"@XPath://p"}`,
+	for _, raw := range []string{
+		`{"bookSourceUrl":""}`,
+		`{"bookSourceUrl":"ftp://books.example"}`,
+		`{"bookSourceUrl":"http://127.0.0.1:8080"}`,
 	} {
 		e := New()
-		e.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			t.Fatal("unsupported source reached network")
-			return nil, nil
-		})
-		s := Source{Rule: json.RawMessage(`{"bookSourceUrl":"https://books.example","searchUrl":"/search",` + extra + `}`)}
-		if _, err := e.Search(context.Background(), s, "x"); err == nil || !strings.Contains(err.Error(), "unsupported") {
-			t.Fatal(extra, err)
-		}
-	}
-	for _, option := range []string{`{"webView":true}`, `{"js":"run()"}`, `{"retry":3}`} {
-		if _, err := makeRequest(sourceRules{}, "https://books.example", "/s,"+option, "x", 1); err == nil {
-			t.Fatal(option)
+		s := Source{Rule: json.RawMessage(raw)}
+		if _, err := e.Search(context.Background(), s, "x"); err == nil {
+			t.Fatalf("expected error for %s, got nil", raw)
 		}
 	}
 }
@@ -550,5 +541,252 @@ func TestLegado3RulesCompatibility(t *testing.T) {
 	}
 	if parsed.BookSourceURL != "https://rich.example" {
 		t.Errorf("parsed URL mismatch: %s", parsed.BookSourceURL)
+	}
+}
+func TestLatestChapterExtractionAndSniff(t *testing.T) {
+	cleaned := cleanChapterTitle("最新章节：第105章 大结局（终）")
+	if cleaned != "第105章 大结局（终）" {
+		t.Errorf("cleanChapterTitle failed, got: %q", cleaned)
+	}
+
+	sniffed, newIntro := sniffLatestFromIntro("最新：第99章 决战天巅\n这是简介内容第一行\n这是第二行")
+	if sniffed != "第99章 决战天巅" {
+		t.Errorf("sniffLatestFromIntro failed, got: %q", sniffed)
+	}
+	if strings.Contains(newIntro, "最新：") {
+		t.Errorf("newIntro still contains prefix, got: %q", newIntro)
+	}
+}
+
+func TestLegadoGJSONAndXPath(t *testing.T) {
+	// 1. JSONPath / GJSON test
+	jsonDoc := []byte(`{
+		"code": 0,
+		"data": {
+			"list": [
+				{"id": "1", "name": "逆天邪神", "author": "火星引力"},
+				{"id": "2", "name": "诡秘之主", "author": "爱潜水的乌贼"}
+			]
+		}
+	}`)
+	doc, err := document(jsonDoc)
+	if err != nil {
+		t.Fatalf("document json failed: %v", err)
+	}
+	items, err := elements(doc, "$.data.list[*]")
+	if err != nil || len(items) != 2 {
+		t.Fatalf("elements JSONPath failed: len=%d, err=%v", len(items), err)
+	}
+	name1, err := extract(items[0], "$.name")
+	if err != nil || name1 != "逆天邪神" {
+		t.Errorf("extract JSONPath name1 failed: %q, err=%v", name1, err)
+	}
+
+	// 2. XPath test
+	htmlDoc := []byte(`
+		<html>
+		<body>
+			<div class="main">
+				<ul class="chapters">
+					<li><a href="/c1.html">第一章 降临</a></li>
+					<li><a href="/c2.html">第二章 觉醒</a></li>
+				</ul>
+				<div id="content">
+					<p>正文段落一</p>
+					<p>正文段落二</p>
+				</div>
+			</div>
+		</body>
+		</html>
+	`)
+	hDoc, err := document(htmlDoc)
+	if err != nil {
+		t.Fatalf("document html failed: %v", err)
+	}
+	chaps, err := elements(hDoc, "//ul[@class='chapters']/li/a")
+	if err != nil || len(chaps) != 2 {
+		t.Fatalf("elements XPath failed: len=%d, err=%v", len(chaps), err)
+	}
+	c1Name, err := extract(chaps[0], "text")
+	if err != nil || !strings.Contains(c1Name, "第一章") {
+		t.Errorf("extract c1Name failed: %q, err=%v", c1Name, err)
+	}
+}
+
+func TestLegadoJSSandboxAndPipeline(t *testing.T) {
+	// 1. JS with Base64 & MD5 & Replace
+	env := JSEnv{
+		Result:  "aGVsbG8gd29ybGQ=", // base64 of "hello world"
+		BaseURL: "https://example.com",
+	}
+	script := `
+		let decoded = java.base64Decode(result);
+		let md5Val = java.md5("test");
+		decoded.toUpperCase() + "_" + md5Val.substring(0, 4)
+	`
+	res, err := RunLegadoJS(script, env)
+	if err != nil {
+		t.Fatalf("RunLegadoJS failed: %v", err)
+	}
+	resStr := fmt.Sprintf("%v", res)
+	if !strings.HasPrefix(resStr, "HELLO WORLD_098f") {
+		t.Errorf("unexpected JS result: %s", resStr)
+	}
+
+	// 2. Rule with embedded <js> block and regex clean
+	htmlDoc := []byte(`
+		<div class="content">
+			<p>本章广告：购买会员更优惠</p>
+			<p>林轩眼神微冷，抬手便是一剑！</p>
+		</div>
+	`)
+	doc, err := document(htmlDoc)
+	if err != nil {
+		t.Fatalf("document failed: %v", err)
+	}
+	rule := `.content p@text##本章广告[^\n]*<js>result.replace("！", "。")</js>`
+	cleaned, err := extract(doc, rule)
+	if err != nil {
+		t.Fatalf("extract with JS pipeline failed: %v", err)
+	}
+	if strings.Contains(cleaned, "本章广告") {
+		t.Errorf("cleaning regex failed, still contains ad: %q", cleaned)
+	}
+	if !strings.Contains(cleaned, "抬手便是一剑。") {
+		t.Errorf("JS replace failed, expected 。 but got: %q", cleaned)
+	}
+}
+
+func TestLegadoFullParityFeatures(t *testing.T) {
+	// 1. AES decode and encode
+	key := "1234567890123456"
+	iv := "1234567890123456"
+	plain := "Hello Legado 3.0"
+	env := JSEnv{
+		Storage: NewLegadoStorage(),
+	}
+	script := fmt.Sprintf(`
+		let enc = java.aesEncode("%s", "%s", "%s");
+		let dec = java.aesDecode("%s", "%s", enc);
+		dec;
+	`, key, iv, plain, key, iv)
+	res, err := RunLegadoJS(script, env)
+	if err != nil {
+		t.Fatalf("RunLegadoJS AES failed: %v", err)
+	}
+	if fmt.Sprintf("%v", res) != plain {
+		t.Errorf("AES decode got %q, want %q", res, plain)
+	}
+
+	// 2. createSymmetricCrypto
+	scriptCrypto := fmt.Sprintf(`
+		let crypto = java.createSymmetricCrypto("AES/CBC/PKCS7Padding", "%s", "%s");
+		let enc = crypto.encryptStr("%s");
+		crypto.decryptStr(enc);
+	`, key, iv, plain)
+	resCrypto, err := RunLegadoJS(scriptCrypto, env)
+	if err != nil {
+		t.Fatalf("createSymmetricCrypto failed: %v", err)
+	}
+	if fmt.Sprintf("%v", resCrypto) != plain {
+		t.Errorf("createSymmetricCrypto got %q, want %q", resCrypto, plain)
+	}
+
+	// 3. GBK encodeURI
+	scriptGBK := `java.encodeURI("小说", "gbk")`
+	resGBK, err := RunLegadoJS(scriptGBK, env)
+	if err != nil {
+		t.Fatalf("GBK encodeURI failed: %v", err)
+	}
+	if !strings.Contains(fmt.Sprintf("%v", resGBK), "%") {
+		t.Errorf("GBK encodeURI expected percent-encoding, got %q", resGBK)
+	}
+
+	// 4. Time format
+	scriptTime := `java.timeFormat(1704067200000, "yyyy-MM-dd")`
+	resTime, err := RunLegadoJS(scriptTime, env)
+	if err != nil {
+		t.Fatalf("timeFormat failed: %v", err)
+	}
+	if !strings.HasPrefix(fmt.Sprintf("%v", resTime), "2024-01-01") {
+		t.Errorf("timeFormat got %q", resTime)
+	}
+
+	// 5. Storage and @get:{var} in rule
+	env.Storage.Put("bookPrefix", "仙侠")
+	doc, _ := document([]byte(`<div><span class="title">凡人修仙传</span></div>`))
+	doc.env = &env
+	resVar, err := extract(doc, `@get:{bookPrefix} && span.title@text`)
+	if err != nil {
+		t.Fatalf("extract with @get failed: %v", err)
+	}
+	if !strings.Contains(resVar, "仙侠") || !strings.Contains(resVar, "凡人修仙传") {
+		t.Errorf("extract with @get got %q", resVar)
+	}
+}
+
+func TestNormalizeContentParagraphs(t *testing.T) {
+	raw := "第一段话开头，他说：“今天天气真好\n”\n第二段话很激动！\n！\n第三段正常文字。"
+	cleaned := normalizeContentParagraphs(raw)
+	if strings.Contains(cleaned, "\n”") || strings.Contains(cleaned, "\n\n”") {
+		t.Errorf("isolated quotation was not merged: %q", cleaned)
+	}
+	if strings.Contains(cleaned, "\n！") || strings.Contains(cleaned, "\n\n！") {
+		t.Errorf("isolated exclamation was not merged: %q", cleaned)
+	}
+	if !strings.Contains(cleaned, "今天天气真好”") {
+		t.Errorf("expected quote merged with text: %q", cleaned)
+	}
+}
+
+func TestAutoChapterPagination(t *testing.T) {
+	pages := map[string]string{
+		"/chapter/1.html":   `<div id="content">第一章第一页内容。(第1/3页)</div><a href="/chapter/1_2.html" id="pb_next">下一页</a>`,
+		"/chapter/1_2.html": `<div id="content">第一章第二页内容。(第2/3页)</div><a href="/chapter/1_3.html" id="pb_next">下一页</a>`,
+		"/chapter/1_3.html": `<div id="content">第一章第三页内容。(第3/3页)</div><a href="/chapter/2.html" id="pb_next">下一章</a>`,
+		"/chapter/2.html":   `<div id="content">这是第二章内容，绝不能被当作第一章分页读入！</div>`,
+	}
+	e := fixtureEngine(t, pages)
+
+	// 场景 1: 规则正常提取 nextContentUrl，遇到下一章 stop
+	s1 := Source{Rule: json.RawMessage(`{
+		"bookSourceUrl": "https://books.example",
+		"ruleContent": {
+			"content": "div#content@text",
+			"nextContentUrl": "a#pb_next@href"
+		}
+	}`)}
+	content1, err := e.Content(context.Background(), s1, "https://books.example/chapter/1.html", "https://books.example/chapter/2.html")
+	if err != nil {
+		t.Fatalf("Content failed: %v", err)
+	}
+	if !strings.Contains(content1, "第一章第一页内容") ||
+		!strings.Contains(content1, "第一章第二页内容") ||
+		!strings.Contains(content1, "第一章第三页内容") {
+		t.Errorf("content1 missing subpages: %s", content1)
+	}
+	if strings.Contains(content1, "这是第二章内容") {
+		t.Errorf("content1 leaked into next chapter: %s", content1)
+	}
+
+	// 场景 2: 书源没有配置 nextContentUrl（甚至为损坏字符串），依靠启发式 DOM 分析下一页
+	s2 := Source{Rule: json.RawMessage(`{
+		"bookSourceUrl": "https://books.example",
+		"ruleContent": {
+			"content": "div#content@text",
+			"nextContentUrl": "text.???@href"
+		}
+	}`)}
+	content2, err := e.Content(context.Background(), s2, "https://books.example/chapter/1.html", "https://books.example/chapter/2.html")
+	if err != nil {
+		t.Fatalf("Content with heuristic fallback failed: %v", err)
+	}
+	if !strings.Contains(content2, "第一章第一页内容") ||
+		!strings.Contains(content2, "第一章第二页内容") ||
+		!strings.Contains(content2, "第一章第三页内容") {
+		t.Errorf("content2 heuristic missing subpages: %s", content2)
+	}
+	if strings.Contains(content2, "这是第二章内容") {
+		t.Errorf("content2 heuristic leaked into next chapter: %s", content2)
 	}
 }

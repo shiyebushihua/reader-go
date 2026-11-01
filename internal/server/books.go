@@ -1,11 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"net/url"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -13,9 +17,13 @@ import (
 	"path/filepath"
 	"readergo/internal/engine"
 	"readergo/internal/importer"
+	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
+
 
 type Progress struct {
 	ChapterID string  `json:"chapterId"`
@@ -35,11 +43,13 @@ type Book struct {
 	ChapterCount int       `json:"chapterCount"`
 	Progress     *Progress `json:"progress"`
 	CreatedAt    time.Time `json:"createdAt"`
+	SourceName   string    `json:"sourceName,omitempty"`
 }
 type Chapter struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	Index int    `json:"index"`
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Index  int    `json:"index"`
+	Cached bool   `json:"cached"`
 }
 
 const bookQuery = "SELECT b.id,b.title,b.author,b.cover,b.intro,b.kind,b.group_name,COALESCE(b.source_id,''),b.url,b.created_at,(SELECT COUNT(*) FROM chapters c WHERE c.book_id=b.id),p.chapter_id,p.position,p.version FROM books b LEFT JOIN progress p ON p.book_id=b.id "
@@ -81,15 +91,83 @@ func (s *Server) books(w http.ResponseWriter, r *http.Request) error {
 	if e = rows.Err(); e != nil {
 		return e
 	}
+	if len(list) > 0 {
+		sids := make([]string, 0, len(list))
+		for _, b := range list {
+			if b.SourceID != "" {
+				sids = append(sids, b.SourceID)
+			}
+		}
+		if len(sids) > 0 {
+			nameMap := s.resolveSourceNames(r.Context(), sids)
+			for i := range list {
+				if name, ok := nameMap[list[i].SourceID]; ok && name != "" {
+					list[i].SourceName = name
+				} else if list[i].Kind == "local" {
+					list[i].SourceName = "本地导入"
+				}
+			}
+		} else {
+			for i := range list {
+				if list[i].Kind == "local" {
+					list[i].SourceName = "本地导入"
+				}
+			}
+		}
+	}
 	respond(w, list)
 	return nil
+}
+func (s *Server) resolveSourceNames(ctx context.Context, sourceIDs []string) map[string]string {
+	res := make(map[string]string)
+	if len(sourceIDs) == 0 {
+		return res
+	}
+	seen := make(map[string]bool)
+	uniqueIDs := make([]string, 0, len(sourceIDs))
+	for _, id := range sourceIDs {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			uniqueIDs = append(uniqueIDs, id)
+		}
+	}
+	if len(uniqueIDs) == 0 {
+		return res
+	}
+	placeholders := strings.Repeat("?,", len(uniqueIDs))
+	placeholders = strings.TrimSuffix(placeholders, ",")
+	query := "SELECT id, name FROM sources WHERE id IN (" + placeholders + ")"
+	args := make([]any, len(uniqueIDs))
+	for i, id := range uniqueIDs {
+		args[i] = id
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var sid, name string
+			if err := rows.Scan(&sid, &name); err == nil {
+				res[sid] = name
+			}
+		}
+	}
+	return res
 }
 func (s *Server) getBook(w http.ResponseWriter, r *http.Request) error {
 	b, e := s.book(r.Context(), current(r).ID, r.PathValue("id"))
 	if e != nil {
 		return e
 	}
+	if b.SourceID != "" {
+		names := s.resolveSourceNames(r.Context(), []string{b.SourceID})
+		if n, ok := names[b.SourceID]; ok && n != "" {
+			b.SourceName = n
+		}
+	} else if b.Kind == "local" {
+		b.SourceName = "本地导入"
+	}
 	respond(w, b)
+	return nil
 	return nil
 }
 func (s *Server) updateBook(w http.ResponseWriter, r *http.Request) error {
@@ -116,6 +194,7 @@ func (s *Server) deleteBook(w http.ResponseWriter, r *http.Request) error {
 	if _, e = s.db.ExecContext(r.Context(), "DELETE FROM books WHERE id=? AND user_id=?", b.ID, current(r).ID); e != nil {
 		return e
 	}
+	_ = os.RemoveAll(filepath.Join(s.cfg.DataDir, "cache", "books", b.ID))
 	if e = os.RemoveAll(filepath.Join(s.cfg.DataDir, "books", b.ID)); e != nil {
 		return fail(500, "FILE_CLEANUP", "记录已移除，但文件清理失败，请联系管理员")
 	}
@@ -132,11 +211,27 @@ func (s *Server) chapters(w http.ResponseWriter, r *http.Request) error {
 		return e
 	}
 	defer rows.Close()
+	cachedMap := make(map[string]bool)
+	targetDir := filepath.Join(s.cfg.DataDir, "cache", "books", b.ID)
+	if b.Kind != "online" {
+		targetDir = filepath.Join(s.cfg.DataDir, "books", b.ID)
+	}
+	if entries, err := os.ReadDir(targetDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".txt") {
+				cid := strings.TrimSuffix(entry.Name(), ".txt")
+				cachedMap[cid] = true
+			}
+		}
+	}
 	list := []Chapter{}
 	for rows.Next() {
 		var c Chapter
 		if e = rows.Scan(&c.ID, &c.Title, &c.Index); e != nil {
 			return e
+		}
+		if cachedMap[c.ID] {
+			c.Cached = true
 		}
 		list = append(list, c)
 	}
@@ -162,14 +257,37 @@ func (s *Server) content(w http.ResponseWriter, r *http.Request) error {
 	}
 	var content string
 	if b.Kind == "online" {
-		src, e := s.source(r.Context(), current(r).ID, b.SourceID, true)
-		if e != nil {
-			return e
+		cacheFile := filepath.Join(s.cfg.DataDir, "cache", "books", b.ID, ch.ID+".txt")
+		cachedData, readErr := os.ReadFile(cacheFile)
+		hasIncomplete := readErr == nil && len(cachedData) > 0 && isIncompleteChapterText(string(cachedData))
+		if readErr == nil && len(cachedData) > 0 && !hasIncomplete {
+			content = string(cachedData)
+		} else {
+			src, e := s.source(r.Context(), current(r).ID, b.SourceID, true)
+			if e != nil {
+				if len(cachedData) > 0 {
+					content = string(cachedData)
+				} else {
+					return e
+				}
+			} else {
+				var nextChapterURL string
+				_ = s.db.QueryRowContext(r.Context(), "SELECT url FROM chapters WHERE book_id=? AND ordinal > ? ORDER BY ordinal ASC LIMIT 1", b.ID, ch.Index).Scan(&nextChapterURL)
+				content, e = s.engine.Content(r.Context(), engine.Source{ID: src.ID, Rule: src.Rule}, url, nextChapterURL)
+				if e != nil {
+					if len(cachedData) > 0 {
+						content = string(cachedData)
+					} else {
+						return fail(422, "CONTENT", "正文抓取失败，书源可能已失效或使用不支持的规则")
+					}
+				} else {
+					_ = os.MkdirAll(filepath.Dir(cacheFile), 0700)
+					_ = os.WriteFile(cacheFile, []byte(content), 0600)
+				}
+			}
 		}
-		content, e = s.engine.Content(r.Context(), engine.Source{ID: src.ID, Rule: src.Rule}, url)
-		if e != nil {
-			return fail(422, "CONTENT", "正文抓取失败，书源可能已失效或使用不支持的规则")
-		}
+		content = engine.PurifyContent(content)
+		go s.preloadUpcomingChapters(b.ID, b.SourceID, ch.Index, 3)
 	} else {
 		f, e := os.Open(filepath.Join(s.cfg.DataDir, "books", b.ID, ch.ID+".txt"))
 		if e != nil {
@@ -624,6 +742,7 @@ func (s *Server) changeBookSource(w http.ResponseWriter, r *http.Request) error 
 	if e = tx.Commit(); e != nil {
 		return e
 	}
+	_ = os.RemoveAll(filepath.Join(s.cfg.DataDir, "cache", "books", b.ID))
 
 	respond(w, map[string]any{
 		"ok":               true,
@@ -724,22 +843,24 @@ func (s *Server) bookmarks(w http.ResponseWriter, r *http.Request) error {
 		if _, e = s.db.ExecContext(r.Context(), "INSERT INTO bookmarks(id,book_id,chapter_id,position,note) VALUES(?,?,?,?,?)", iid, b.ID, v.ChapterID, v.Position, v.Note); e != nil {
 			return e
 		}
-		respond(w, map[string]any{"id": iid, "chapterId": v.ChapterID, "position": v.Position, "note": v.Note})
+		var ctitle string
+		_ = s.db.QueryRowContext(r.Context(), "SELECT title FROM chapters WHERE id=? AND book_id=?", v.ChapterID, b.ID).Scan(&ctitle)
+		respond(w, map[string]any{"id": iid, "chapterId": v.ChapterID, "chapterTitle": ctitle, "position": v.Position, "note": v.Note})
 		return nil
 	}
-	rows, e := s.db.QueryContext(r.Context(), "SELECT id,chapter_id,position,note FROM bookmarks WHERE book_id=? ORDER BY created_at DESC LIMIT 1000", b.ID)
+	rows, e := s.db.QueryContext(r.Context(), "SELECT b.id, b.chapter_id, COALESCE(c.title, ''), b.position, b.note FROM bookmarks b LEFT JOIN chapters c ON b.chapter_id=c.id WHERE b.book_id=? ORDER BY b.created_at DESC LIMIT 1000", b.ID)
 	if e != nil {
 		return e
 	}
 	defer rows.Close()
 	list := []map[string]any{}
 	for rows.Next() {
-		var iid, cid, note string
+		var iid, cid, ctitle, note string
 		var pos float64
-		if e = rows.Scan(&iid, &cid, &pos, &note); e != nil {
+		if e = rows.Scan(&iid, &cid, &ctitle, &pos, &note); e != nil {
 			return e
 		}
-		list = append(list, map[string]any{"id": iid, "chapterId": cid, "position": pos, "note": note})
+		list = append(list, map[string]any{"id": iid, "chapterId": cid, "chapterTitle": ctitle, "position": pos, "note": note})
 	}
 	if e = rows.Err(); e != nil {
 		return e
@@ -748,7 +869,7 @@ func (s *Server) bookmarks(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 func (s *Server) deleteBookmark(w http.ResponseWriter, r *http.Request) error {
-	res, e := s.db.ExecContext(r.Context(), "DELETE bm FROM bookmarks bm JOIN books b ON bm.book_id=b.id WHERE bm.id=? AND b.user_id=?", r.PathValue("id"), current(r).ID)
+	res, e := s.db.ExecContext(r.Context(), "DELETE FROM bookmarks WHERE id=? AND book_id IN (SELECT id FROM books WHERE user_id=?)", r.PathValue("id"), current(r).ID)
 	if e != nil {
 		return e
 	}
@@ -758,4 +879,388 @@ func (s *Server) deleteBookmark(w http.ResponseWriter, r *http.Request) error {
 	}
 	respond(w, map[string]bool{"ok": true})
 	return nil
+}
+
+type BookSourceCandidate struct {
+	SourceID      string `json:"sourceId"`
+	SourceName    string `json:"sourceName"`
+	BookURL       string `json:"bookUrl"`
+	Title         string `json:"title"`
+	Author        string `json:"author"`
+	LatestChapter string `json:"latestChapter"`
+	Cover         string `json:"cover"`
+	IsCurrent     bool   `json:"isCurrent"`
+}
+
+func (s *Server) bookSources(w http.ResponseWriter, r *http.Request) error {
+	b, e := s.book(r.Context(), current(r).ID, r.PathValue("id"))
+	if e != nil {
+		return e
+	}
+	if b.Kind != "online" {
+		return fail(400, "LOCAL_BOOK", "本地导入书籍不支持在线换源")
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+
+	uid := current(r).ID
+	sources, err := s.resolveSearchSources(ctx, uid, nil, 1000)
+	if err != nil {
+		return err
+	}
+	if len(sources) == 0 {
+		respond(w, []BookSourceCandidate{})
+		return nil
+	}
+
+	keyword := strings.TrimSpace(b.Title)
+	if keyword == "" {
+		return fail(400, "PARAM", "书名为空无法换源搜索")
+	}
+
+	candidates := []BookSourceCandidate{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 16)
+
+	for _, src := range sources {
+		wg.Add(1)
+		go func(v Source) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+
+			srcCtx, srcCancel := context.WithTimeout(ctx, 12*time.Second)
+			items, err := s.engine.Search(srcCtx, engine.Source{ID: v.ID, Rule: v.Rule}, keyword)
+			srcCancel()
+			if err != nil || len(items) == 0 {
+				return
+			}
+
+			cleanBookTitle := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(b.Title, " ", ""), "　", ""))
+			for _, item := range items {
+				itemTitle := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(item.Title, " ", ""), "　", ""))
+				if itemTitle != cleanBookTitle && !strings.Contains(itemTitle, cleanBookTitle) && !strings.Contains(cleanBookTitle, itemTitle) {
+					continue
+				}
+				isCur := (v.ID == b.SourceID && item.URL == b.URL)
+				cand := BookSourceCandidate{
+					SourceID:      v.ID,
+					SourceName:    v.Name,
+					BookURL:       item.URL,
+					Title:         item.Title,
+					Author:        item.Author,
+					LatestChapter: item.LatestChapter,
+					Cover:         item.Cover,
+					IsCurrent:     isCur,
+				}
+				mu.Lock()
+				candidates = append(candidates, cand)
+				mu.Unlock()
+			}
+		}(src)
+	}
+	wg.Wait()
+
+	foundCurrent := false
+	for _, c := range candidates {
+		if c.IsCurrent {
+			foundCurrent = true
+			break
+		}
+	}
+	if !foundCurrent && b.SourceID != "" {
+		if curSrc, err := s.source(r.Context(), uid, b.SourceID, false); err == nil {
+			candidates = append([]BookSourceCandidate{{
+				SourceID:   curSrc.ID,
+				SourceName: curSrc.Name,
+				BookURL:    b.URL,
+				Title:      b.Title,
+				Author:     b.Author,
+				Cover:      b.Cover,
+				IsCurrent:  true,
+			}}, candidates...)
+		}
+	}
+	// 排序：当前书源最前，其余按是否有最新章节及名称匹配度排序
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].IsCurrent != candidates[j].IsCurrent {
+			return candidates[i].IsCurrent
+		}
+		hasLatestI := candidates[i].LatestChapter != ""
+		hasLatestJ := candidates[j].LatestChapter != ""
+		if hasLatestI != hasLatestJ {
+			return hasLatestI
+		}
+		return candidates[i].SourceName < candidates[j].SourceName
+	})
+
+	respond(w, candidates)
+	return nil
+}
+
+type CacheChaptersReq struct {
+	FromOrdinal int      `json:"fromOrdinal"`
+	Count       int      `json:"count"`
+	ChapterIDs  []string `json:"chapterIds"`
+}
+
+func (s *Server) cacheChapters(w http.ResponseWriter, r *http.Request) error {
+	b, e := s.book(r.Context(), current(r).ID, r.PathValue("id"))
+	if e != nil {
+		return e
+	}
+	if b.Kind != "online" {
+		respond(w, map[string]any{"ok": true, "cached": 0, "message": "本地书籍已全部在本地存储"})
+		return nil
+	}
+
+	var req CacheChaptersReq
+	_ = decode(w, r, &req)
+
+	if req.Count <= 0 {
+		req.Count = 50
+	}
+	if req.Count > 200 {
+		req.Count = 200
+	}
+
+	var rows *sql.Rows
+	if len(req.ChapterIDs) > 0 {
+		placeholders := make([]string, len(req.ChapterIDs))
+		args := make([]any, len(req.ChapterIDs)+1)
+		args[0] = b.ID
+		for i, cid := range req.ChapterIDs {
+			placeholders[i] = "?"
+			args[i+1] = cid
+		}
+		query := fmt.Sprintf("SELECT id,ordinal,title,url FROM chapters WHERE book_id=? AND id IN (%s) ORDER BY ordinal", strings.Join(placeholders, ","))
+		rows, e = s.db.QueryContext(r.Context(), query, args...)
+	} else {
+		rows, e = s.db.QueryContext(r.Context(), "SELECT id,ordinal,title,url FROM chapters WHERE book_id=? AND ordinal >= ? ORDER BY ordinal LIMIT ?", b.ID, req.FromOrdinal, req.Count)
+	}
+	if e != nil {
+		return e
+	}
+	defer rows.Close()
+
+	type targetChap struct {
+		ID, Title, URL string
+		Ordinal        int
+	}
+	targets := []targetChap{}
+	for rows.Next() {
+		var tc targetChap
+		if err := rows.Scan(&tc.ID, &tc.Ordinal, &tc.Title, &tc.URL); err == nil {
+			targets = append(targets, tc)
+		}
+	}
+
+	src, e := s.source(r.Context(), current(r).ID, b.SourceID, true)
+	if e != nil {
+		return e
+	}
+
+	cacheDir := filepath.Join(s.cfg.DataDir, "cache", "books", b.ID)
+	_ = os.MkdirAll(cacheDir, 0700)
+
+	cachedCount := 0
+	skipCount := 0
+	for i, ch := range targets {
+		destFile := filepath.Join(cacheDir, ch.ID+".txt")
+		if fi, err := os.Stat(destFile); err == nil && fi.Size() > 0 {
+			skipCount++
+			continue
+		}
+		var nextURL string
+		if i+1 < len(targets) {
+			nextURL = targets[i+1].URL
+		} else {
+			_ = s.db.QueryRowContext(r.Context(), "SELECT url FROM chapters WHERE book_id=? AND ordinal > ? ORDER BY ordinal ASC LIMIT 1", b.ID, ch.Ordinal).Scan(&nextURL)
+		}
+		content, err := s.engine.Content(r.Context(), engine.Source{ID: src.ID, Rule: src.Rule}, ch.URL, nextURL)
+		if err == nil && len(content) > 0 {
+			_ = os.WriteFile(destFile, []byte(content), 0600)
+			cachedCount++
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+
+	respond(w, map[string]any{
+		"ok":      true,
+		"cached":  cachedCount,
+		"skipped": skipCount,
+		"total":   len(targets),
+	})
+	return nil
+}
+
+func (s *Server) bookCacheStatus(w http.ResponseWriter, r *http.Request) error {
+	b, e := s.book(r.Context(), current(r).ID, r.PathValue("id"))
+	if e != nil {
+		return e
+	}
+	var total int
+	_ = s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM chapters WHERE book_id=?", b.ID).Scan(&total)
+
+	cachedCount := 0
+	cacheDir := filepath.Join(s.cfg.DataDir, "cache", "books", b.ID)
+	if b.Kind != "online" {
+		cacheDir = filepath.Join(s.cfg.DataDir, "books", b.ID)
+	}
+	if entries, err := os.ReadDir(cacheDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".txt") {
+				cachedCount++
+			}
+		}
+	}
+
+	respond(w, map[string]any{
+		"bookId":         b.ID,
+		"totalChapters":  total,
+		"cachedChapters": cachedCount,
+	})
+	return nil
+}
+
+func (s *Server) preloadUpcomingChapters(bookID, sourceID string, currentOrdinal, count int) {
+	if count <= 0 || sourceID == "" || bookID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	rows, err := s.db.QueryContext(ctx, "SELECT id,url FROM chapters WHERE book_id=? AND ordinal>? ORDER BY ordinal ASC LIMIT ?", bookID, currentOrdinal, count)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type chapItem struct {
+		id, url string
+	}
+	var queue []chapItem
+	for rows.Next() {
+		var ci chapItem
+		if err := rows.Scan(&ci.id, &ci.url); err == nil {
+			queue = append(queue, ci)
+		}
+	}
+	if len(queue) == 0 {
+		return
+	}
+
+	var rule string
+	if err := s.db.QueryRowContext(ctx, "SELECT rule FROM sources WHERE id=?", sourceID).Scan(&rule); err != nil {
+		return
+	}
+
+	cacheDir := filepath.Join(s.cfg.DataDir, "cache", "books", bookID)
+	_ = os.MkdirAll(cacheDir, 0700)
+
+	for i, ci := range queue {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		destFile := filepath.Join(cacheDir, ci.id+".txt")
+		if fi, err := os.Stat(destFile); err == nil && fi.Size() > 0 {
+			continue
+		}
+		var nextURL string
+		if i+1 < len(queue) {
+			nextURL = queue[i+1].url
+		}
+		text, err := s.engine.Content(ctx, engine.Source{ID: sourceID, Rule: json.RawMessage(rule)}, ci.url, nextURL)
+		if err == nil && len(text) > 0 {
+			_ = os.WriteFile(destFile, []byte(text), 0600)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func (s *Server) exportBook(w http.ResponseWriter, r *http.Request) error {
+	b, e := s.book(r.Context(), current(r).ID, r.PathValue("id"))
+	if e != nil {
+		return e
+	}
+	rows, e := s.db.QueryContext(r.Context(), "SELECT id, ordinal, title FROM chapters WHERE book_id=? ORDER BY ordinal ASC", b.ID)
+	if e != nil {
+		return e
+	}
+	defer rows.Close()
+
+	type chInfo struct {
+		id      string
+		ordinal int
+		title   string
+	}
+	var chs []chInfo
+	for rows.Next() {
+		var ci chInfo
+		if err := rows.Scan(&ci.id, &ci.ordinal, &ci.title); err == nil {
+			chs = append(chs, ci)
+		}
+	}
+	if len(chs) == 0 {
+		return fail(400, "NO_CHAPTERS", "该书籍无章节可供导出")
+	}
+
+	filename := b.Title
+	if filename == "" {
+		filename = "novel"
+	}
+	encodedFilename := url.PathEscape(filename + ".txt")
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.txt\"; filename*=UTF-8''%s", filename, encodedFilename))
+
+	var buf bytes.Buffer
+	buf.WriteString("《" + b.Title + "》\r\n")
+	if b.Author != "" {
+		buf.WriteString("作者：" + b.Author + "\r\n")
+	}
+	if b.Intro != "" {
+		buf.WriteString("简介：" + strings.ReplaceAll(b.Intro, "\n", "\r\n") + "\r\n")
+	}
+	buf.WriteString("\r\n" + strings.Repeat("=", 40) + "\r\n\r\n")
+	w.Write(buf.Bytes())
+
+	cacheDir := filepath.Join(s.cfg.DataDir, "cache", "books", b.ID)
+	for _, ci := range chs {
+		var chBuf bytes.Buffer
+		chBuf.WriteString(ci.title + "\r\n\r\n")
+
+		cacheFile := filepath.Join(cacheDir, ci.id+".txt")
+		if contentBytes, err := os.ReadFile(cacheFile); err == nil && len(contentBytes) > 0 {
+			chBuf.Write(contentBytes)
+		} else {
+			chBuf.WriteString("（本章暂未缓存至本地）")
+		}
+		chBuf.WriteString("\r\n\r\n" + strings.Repeat("-", 30) + "\r\n\r\n")
+		w.Write(chBuf.Bytes())
+	}
+
+	return nil
+}
+
+var incompletePageRegex = regexp.MustCompile(`(?:\([第\s]*1\s*[/／]\s*[2-9]\d*页?\)|（[第\s]*1\s*[/／]\s*[2-9]\d*页?）|本章未完|点击下一页)`)
+
+func isIncompleteChapterText(s string) bool {
+	checkHead := s
+	if len(checkHead) > 500 {
+		checkHead = checkHead[:500]
+	}
+	checkTail := s
+	if len(checkTail) > 500 {
+		checkTail = checkTail[len(checkTail)-500:]
+	}
+	return incompletePageRegex.MatchString(checkHead) || incompletePageRegex.MatchString(checkTail)
 }

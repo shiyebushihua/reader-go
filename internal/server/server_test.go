@@ -27,7 +27,7 @@ func testServer(t *testing.T) (*Server, sqlmock.Sqlmock) {
 	return New(db, Config{DataDir: dir}, nil), m
 }
 func session(m sqlmock.Sqlmock, role string, must bool) {
-	m.ExpectQuery("SELECT u.id,u.username,u.role").WithArgs(digest("session")).WillReturnRows(sqlmock.NewRows([]string{"id", "username", "role", "status", "must_change", "created_at", "csrf"}).AddRow("user1", "reader", role, "active", must, time.Now(), "csrf"))
+	m.ExpectQuery("SELECT u.id,u.username,u.role").WithArgs(digest("session"), sqlmock.AnyArg()).WillReturnRows(sqlmock.NewRows([]string{"id", "username", "role", "status", "must_change", "created_at", "csrf"}).AddRow("user1", "reader", role, "active", must, time.Now(), "csrf"))
 }
 func request(s *Server, method, path, body string, logged, csrf bool) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, path, bytes.NewBufferString(body))

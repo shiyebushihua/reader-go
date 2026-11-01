@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -80,11 +81,14 @@ func run() error {
 	}
 	var version int
 	if e = db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); e != nil || version != 1 {
-		return errors.New("database schema not ready; run reader migrate first")
+		slog.Info("initializing database schema...")
+		migrateCtx, migrateCancel := context.WithTimeout(context.Background(), time.Minute)
+		if e = server.Migrate(migrateCtx, db); e != nil {
+			migrateCancel()
+			return fmt.Errorf("auto-migration failed: %w", e)
+		}
+		migrateCancel()
 	}
-	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	_ = server.EnsureUserSourcesSchema(migrateCtx, db)
-	migrateCancel()
 	assets, e := fs.Sub(static, "static")
 	if e != nil {
 		return e

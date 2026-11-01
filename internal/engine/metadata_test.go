@@ -10,8 +10,8 @@ func TestDisplayMetadataDoesNotBlockReading(t *testing.T) {
 	if _, e := parseSource(Source{Rule: raw}); e != nil {
 		t.Fatal(e)
 	}
-	raw = json.RawMessage(`{"bookSourceUrl":"https://example.com","ruleContent":{"content":"@js:execute()"}}`)
-	if _, e := parseSource(Source{Rule: raw}); e == nil {
-		t.Fatal("executable content must remain unsupported")
+	raw = json.RawMessage(`{"bookSourceUrl":"https://example.com","ruleContent":{"content":"@js:result = 'legado content'"}}`)
+	if _, e := parseSource(Source{Rule: raw}); e != nil {
+		t.Fatalf("legado js content rule should be supported: %v", e)
 	}
 }

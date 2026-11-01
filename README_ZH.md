@@ -2,382 +2,125 @@
 
 [English](README.md) | 简体中文
 
-Go + Vue 3 + TypeScript + MySQL 的自托管阅读服务，当前版本 **v0.0.8**。Docker 从源码构建前端并嵌入单个 Go 二进制程序，运行时不需要 Node.js 或 JVM。
-
-## 功能
-
-- 私人书架、搜索、TXT/EPUB 导入、书签、阅读进度同步与书架分组。
-- 手机紧凑书架（适配 iOS / 移动端网页交互）、主题/字体/行距设置、上下滚动与左右滑动翻页、一键换源。
-- IndexedDB 书籍/章节离线缓存（不等于完整离线 PWA）。
-- 个人独立书源管理（每位用户各自导入、维护并使用自己的书源，互不干扰）、SSE 流式搜索、管理员用户管理与操作审计。
-- 首次令牌初始化，无公开注册，无默认管理员账号或密码。
-- 登录管理员后，连续点击版本号 5 次解锁管理入口；后端接口仍严格校验管理员权限。
-
-书源引擎不保证兼容所有 Legado 规则，详见 [ENGINE_NOTES.md](ENGINE_NOTES.md)。EPUB 转换为纯文本，不保留完整排版与图片。阅读进度为章节内相对位置。仅导入有合法使用权的内容。
+基于 Go + Vue 3 + TypeScript 开发的现代自托管在线阅读服务，当前稳定版本 **v0.0.25**。Docker 从源码多阶段构建前端并嵌入单一 Go 二进制程序中，运行时无任何 JVM 或 Node.js 运行时依赖，开箱即用，轻量高效。
 
 ---
 
-## Docker 部署教程
+## 核心功能特性
 
-### 1. 环境准备与 MySQL 初始化（完整建表 DDL）
+### 1. 现代化沉浸式阅读体验
+- **精细排版定制**：提供多套精选阅读主题（日间亮白、雅致羊皮纸、柔和绿意、深邃夜间等），支持字体库切换、字号无级缩放、行高与页面边距精细微调。
+- **双模翻页交互**：支持左右平铺滑动翻页（适配移动端单手操作）与上下无缝滚动阅读。
+- **纯前端语音朗读 (TTS)**：基于浏览器 Web Speech API 原生实现，支持系统语音库自由选择、语速/语调动态调节、自动连续朗读与后台播放控制，无需额外付费接口。
+- **正文净化排版**：内置文本净化规则引擎与段落格式化算法，支持自定义正则表达式实时过滤干扰广告与乱序冗余文本。
+- **简繁体中文自由转换**：支持原文、简体、繁体无缝转换，满足不同阅读习惯。
+- **章节自动分页补全**：当章节正文存在多页分页时，后台引擎自动探测并完整拼接所有子页，呈现连贯的一体化阅读内容。
+- **双级高速缓存体系**：服务端磁盘章节缓存（`cache/books/...`）与客户端浏览器原生 IndexedDB 离线缓存相结合，断网亦可畅读。
+- **一键快捷换源**：在阅读界面随时呼出换源抽屉，毫秒级检测多源更新状态，保留阅读进度无感切换。
 
-- **Docker Engine**（`20.10+`）与 **Docker Compose v2**（`docker compose version`）。
-- **外部 MySQL 8.0+**：提前创建 `utf8mb4` 编码的数据库与专用账号。
-- 您既可以通过 `reader migrate` 自动建表，也可以直接在 **1Panel 数据库面板 / Navicat / MySQL 命令行** 中导入项目根目录下的 [`sql/schema.sql`](sql/schema.sql) 或执行以下完整 DDL：
+### 2. 高性能规则解析引擎
+- **多语法全能解析**：全面支持 CSS 复合选择器、XPath 1.0 路径匹配、JSONPath 提取以及多段正则表达式清洗管道。
+- **嵌入式 JavaScript 脚本沙箱**：内置安全隔离的 JavaScript 执行环境，原生支持自定义脚本计算、加解密逻辑与复杂动态内容提取。
+- **编码与网络自适应**：原生支持 GET / POST 请求、自定义 Headers、GBK / UTF-8 等字符编码自动探测与转换。
+- **多用户独立书源管理**：每位用户拥有专属的书源列表空间，支持本地/网络 JSON 规则一键批量导入、启用禁用与独立维护。
+- **SSE 流式并发搜书**：基于 Server-Sent Events 实现异步并行多源检索，首批结果即时推送，告别长时间空白等待。
 
-```sql
--- 1. 创建数据库与专用账号
-CREATE DATABASE IF NOT EXISTS reader CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS 'reader'@'%' IDENTIFIED BY 'your_strong_db_password';
-GRANT ALL PRIVILEGES ON reader.* TO 'reader'@'%';
-FLUSH PRIVILEGES;
+### 3. 极速平稳的前端交互
+- **零白屏书架即时渲染**：采用模块级内存缓存策略与静默后台更新机制，从阅读器或详情页返回书架时 0 延迟呈现，彻底消除白屏与骨架屏闪烁。
+- **搜索状态持久保持**：引入组件状态持久化保持机制，在书架、搜索与管理面板之间自由切换，保留搜索词、筛选条件与当前浏览位置。
+- **移动端优先设计**：遵循现代移动交互规范，界面清爽自然，无多余装饰，适配从智能手机、平板到桌面宽屏的全设备视口。
 
-USE reader;
-SET NAMES utf8mb4;
+### 4. 企业级安全与用户体系
+- **首登引导安全机制**：无公开对外注册接口，无任何预置弱口令，首次启动需通过安全引导令牌（Setup Token）初始化管理员账号。
+- **隐蔽管理入口**：登录管理员账号后连续点击左上角版本徽标 5 次唤出管理后台；后端接口层层校验，权限隔离严密。
+- **操作审计与运维监控**：内置详尽的系统操作审计日志、服务就绪与探活健康检查接口（`/health/live`、`/health/ready`）。
 
--- 2. 完整表结构 DDL（同步保存在 sql/schema.sql 与 internal/server/schema.sql）
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  version INT PRIMARY KEY,
-  applied_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
-CREATE TABLE IF NOT EXISTS users (
-  id CHAR(32) PRIMARY KEY,
-  username VARCHAR(64) NOT NULL UNIQUE,
-  password_hash VARCHAR(100) NOT NULL,
-  role VARCHAR(10) NOT NULL,
-  status VARCHAR(10) NOT NULL DEFAULT 'active',
-  must_change BOOLEAN NOT NULL DEFAULT TRUE,
-  settings JSON NULL,
-  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
-CREATE TABLE IF NOT EXISTS sessions (
-  token_hash CHAR(64) PRIMARY KEY,
-  user_id CHAR(32) NOT NULL,
-  csrf CHAR(64) NOT NULL,
-  expires_at DATETIME(6) NOT NULL,
-  INDEX (user_id),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
-CREATE TABLE IF NOT EXISTS sources (
-  id CHAR(32) PRIMARY KEY,
-  user_id CHAR(32) NOT NULL DEFAULT '',
-  source_key CHAR(64) NOT NULL,
-  name VARCHAR(255) NOT NULL,
-  url TEXT NOT NULL,
-  group_name VARCHAR(255) NOT NULL DEFAULT '',
-  enabled BOOLEAN NOT NULL DEFAULT TRUE,
-  rule JSON NOT NULL,
-  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
-  UNIQUE (user_id, source_key),
-  INDEX (user_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
-CREATE TABLE IF NOT EXISTS books (
-  id CHAR(32) PRIMARY KEY,
-  user_id CHAR(32) NOT NULL,
-  title VARCHAR(512) NOT NULL,
-  author VARCHAR(255) NOT NULL DEFAULT '',
-  cover TEXT NOT NULL,
-  intro MEDIUMTEXT NOT NULL,
-  kind VARCHAR(10) NOT NULL,
-  group_name VARCHAR(255) NOT NULL DEFAULT '',
-  source_id CHAR(32) NULL,
-  url TEXT NOT NULL,
-  identity_hash CHAR(64) NOT NULL,
-  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  UNIQUE (user_id, identity_hash),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
-CREATE TABLE IF NOT EXISTS chapters (
-  id CHAR(32) PRIMARY KEY,
-  book_id CHAR(32) NOT NULL,
-  ordinal INT NOT NULL,
-  title VARCHAR(1024) NOT NULL,
-  url TEXT NOT NULL,
-  UNIQUE (book_id, ordinal),
-  FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
-CREATE TABLE IF NOT EXISTS progress (
-  book_id CHAR(32) PRIMARY KEY,
-  chapter_id CHAR(32) NOT NULL,
-  position DOUBLE NOT NULL DEFAULT 0,
-  version BIGINT NOT NULL DEFAULT 1,
-  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
-  FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
-CREATE TABLE IF NOT EXISTS bookmarks (
-  id CHAR(32) PRIMARY KEY,
-  book_id CHAR(32) NOT NULL,
-  chapter_id CHAR(32) NOT NULL,
-  position DOUBLE NOT NULL,
-  note VARCHAR(1000) NOT NULL,
-  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  INDEX (book_id),
-  FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
-CREATE TABLE IF NOT EXISTS audit_logs (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  actor VARCHAR(64) NOT NULL,
-  action VARCHAR(64) NOT NULL,
-  target VARCHAR(128) NOT NULL,
-  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
-INSERT IGNORE INTO schema_migrations (version) VALUES (1);
-```
+### 5. 双数据库引擎持久化支持
+- **生产级 MySQL 8.0+**：适用于多并发、多用户的云端部署环境，提供完整的事务与严格数据一致性。
+- **内置本地 SQLite**：无需配置或安装独立数据库服务，单文件开箱即用，极简运维。
 
 ---
 
-### 2. 方式一：Docker Compose 编排部署（推荐）
+## 快速上手与部署
 
-#### 第一步：克隆代码并生成密钥文件
+### 方式一：Docker Compose 生产部署（推荐）
 
+1. **准备 `compose.yaml` 文件**：
+```yaml
+services:
+  reader:
+    image: reader-go:latest
+    container_name: reader-go
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      READER_HTTP_ADDR: ":8080"
+      READER_DATA_DIR: "/data"
+      READER_PUBLIC_URL: "https://reader.example.com"
+      READER_COOKIE_SECURE: "true"
+      READER_SETUP_TOKEN: "your_random_bootstrap_token_minimum_24_chars"
+      # 若使用外部 MySQL：
+      READER_DB_DRIVER: "mysql"
+      READER_DB_HOST: "127.0.0.1"
+      READER_DB_PORT: "3306"
+      READER_DB_NAME: "reader"
+      READER_DB_USER: "reader"
+      READER_DB_PASSWORD: "your_mysql_password"
+      # 若使用本地 SQLite（取消注释即可）：
+      # READER_DB_DRIVER: "sqlite"
+    volumes:
+      - ./data:/data
+```
+
+2. **启动服务**：
 ```bash
-git clone https://github.com/shiyebushihua/reader-go.git
-cd reader-go
-cp .env.example .env
-mkdir -p secrets
-chmod 700 secrets
-```
-
-在 Bash 中交互式写入数据库密码和初始化令牌，避免泄露到命令历史中：
-
-```bash
-read -r -s -p 'MySQL password: ' DB_PASSWORD; echo
-printf '%s' "$DB_PASSWORD" > secrets/db_password.txt
-unset DB_PASSWORD
-# 初始化令牌长度不少于 24 位（32 字节 hex 为 64 位）
-openssl rand -hex 32 > secrets/setup_token.txt
-# 容器默认以 UID/GID 10001 运行，需赋予读取权限
-sudo chown 10001:10001 secrets/*.txt
-sudo chmod 400 secrets/*.txt
-```
-
-#### 第二步：修改 `.env` 配置文件
-
-**场景 A —— HTTPS 反向代理访问（生产环境推荐）**：
-
-```dotenv
-READER_DB_HOST=mysql.example.internal
-READER_DB_PORT=3306
-READER_DB_NAME=reader
-READER_DB_USER=reader
-READER_DB_TLS_MODE=false
-READER_BIND_IP=127.0.0.1
-READER_PORT=8081
-READER_PUBLIC_URL=https://reader.example.com
-READER_COOKIE_SECURE=true
-```
-
-**场景 B —— 临时 HTTP IP 直连（仅限内网或测试环境）**：
-
-```dotenv
-READER_DB_HOST=192.168.1.10
-READER_DB_PORT=3306
-READER_DB_NAME=reader
-READER_DB_USER=reader
-READER_DB_TLS_MODE=false
-READER_BIND_IP=0.0.0.0
-READER_PORT=8081
-READER_PUBLIC_URL=http://192.168.1.20:8081
-READER_COOKIE_SECURE=false
-```
-
-> **重要注意事项**：
-> - `READER_PUBLIC_URL` 必须与浏览器地址栏中的协议（`http`/`https`）、域名/IP、端口完全一致，末尾不要带路径。
-> - 使用纯 HTTP 访问时，**必须设置 `READER_COOKIE_SECURE=false`**，否则浏览器不会携带登录 Cookie，会出现登录后仍提示“请先登录”。切回 HTTPS 后请恢复为 `true`。
-> - `READER_DB_HOST` 不要填 `localhost`（容器内的 `localhost` 指向容器自身）。
-
-#### 第三步：构建、迁移表结构并启动服务
-
-```bash
-docker compose config --quiet
-docker compose build --pull
-docker compose run --rm reader migrate
-docker compose up -d
-docker compose ps
-docker compose logs --tail=100 reader
-curl -f http://127.0.0.1:8081/health/ready
-```
-
-首次打开网页时，通过以下命令查看初始化令牌，在页面中创建首位管理员账号与密码：
-
-```bash
-sudo cat secrets/setup_token.txt
-```
-
----
-
-### 3. 方式二：单容器 `docker build` + `docker run` 部署
-
-如果不使用 Docker Compose，也可以直接使用 `docker` 命令构建并运行：
-
-```bash
-# 1. 构建镜像
-docker build -t reader-go:0.0.6 .
-
-# 2. 创建宿主机数据目录并授权给容器运行用户 (10001:10001)
-mkdir -p /opt/reader-go/data
-sudo chown -R 10001:10001 /opt/reader-go/data
-
-# 3. 执行数据库初始化迁移 (migrate)
-docker run --rm \
-  -e READER_DB_HOST=192.168.1.10 \
-  -e READER_DB_PORT=3306 \
-  -e READER_DB_NAME=reader \
-  -e READER_DB_USER=reader \
-  -e READER_DB_PASSWORD='your_strong_db_password' \
-  -e READER_DB_TLS_MODE=false \
-  -v /opt/reader-go/data:/data \
-  reader-go:0.0.6 migrate
-
-# 4. 启动常驻服务容器
-docker run -d \
-  --name reader-go \
-  --restart unless-stopped \
-  -p 127.0.0.1:8081:8080 \
-  -e READER_DB_HOST=192.168.1.10 \
-  -e READER_DB_PORT=3306 \
-  -e READER_DB_NAME=reader \
-  -e READER_DB_USER=reader \
-  -e READER_DB_PASSWORD='your_strong_db_password' \
-  -e READER_DB_TLS_MODE=false \
-  -e READER_SETUP_TOKEN="$(openssl rand -hex 32)" \
-  -e READER_PUBLIC_URL=https://reader.example.com \
-  -e READER_COOKIE_SECURE=true \
-  -v /opt/reader-go/data:/data \
-  reader-go:0.0.6
-```
-
----
-
-### 4. 方式三：1Panel 面板离线镜像 `.tar` 包构建、导入与升级
-
-当云端服务器拉取 npm / Go 依赖较慢时，可在本地电脑构建好 `.tar` 镜像包，上传至 1Panel 面板一键导入升级：
-
-#### 1. 在本地导出离线镜像包
-
-```bash
-# 构建 x86_64 (linux/amd64) 服务器镜像包：
-docker buildx build --platform linux/amd64 -t reader-go:0.0.6 \
-  --output type=docker,name=reader-go:0.0.6,dest=reader-go-0.0.6-amd64.tar .
-
-# 或构建 ARM64 (linux/arm64) 服务器镜像包：
-docker buildx build --platform linux/arm64 -t reader-go:0.0.6 \
-  --output type=docker,name=reader-go:0.0.6,dest=reader-go-0.0.6-arm64.tar .
-```
-
-#### 2. 在 1Panel 中导入并升级版本
-
-1. 登录 **1Panel 面板** $\rightarrow$ **容器** $\rightarrow$ **镜像** $\rightarrow$ 点击 **导入镜像**，选择上传 `reader-go-0.0.6-amd64.tar`（或在服务器终端执行 `docker load -i reader-go-0.0.6-amd64.tar`）。
-2. 确认镜像列表中已出现 `reader-go:0.0.6`。
-3. 在 **容器 $\rightarrow$ 编排**（或服务器项目目录）中，确保 `compose.yaml` 的镜像版本为 `image: reader-go:0.0.6`，然后执行：
-   ```bash
-   docker compose run --rm reader migrate
-   docker compose up -d
-   ```
-
----
-
-### 5. 反向代理配置示例（Nginx / OpenResty / 1Panel 网站）
-
-使用 Nginx 或 1Panel OpenResty 反代时，请放宽上传体积限制（用于导入 TXT/EPUB），并为流式搜索接口（`/api/v1/search/stream`）关闭代理缓冲：
-
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:8081;
-    proxy_http_version 1.1;
-    proxy_set_header Host $http_host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-
-    client_max_body_size 100m;
-    proxy_read_timeout 120s;
-    proxy_send_timeout 120s;
-}
-
-location /api/v1/search/stream {
-    proxy_pass http://127.0.0.1:8081;
-    proxy_http_version 1.1;
-    proxy_set_header Host $http_host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-
-    proxy_buffering off;
-    proxy_cache off;
-    chunked_transfer_encoding on;
-    proxy_read_timeout 120s;
-}
-```
-
-> 若 1Panel 的 OpenResty 运行在容器内，OpenResty 容器里的 `127.0.0.1` 指向其自身而非宿主机，请改为宿主机 Docker 网桥地址（如 `172.17.0.1:8081`）或配置共享容器网络。
-
----
-
-### 6. 环境变量一览表
-
-| 变量名 | 默认值 | 必填 | 说明 |
-| :--- | :--- | :---: | :--- |
-| `READER_HTTP_ADDR` | `:8080` | 否 | 容器内部监听地址（如 `:8080` 或 `0.0.0.0:8080`）。 |
-| `READER_PORT` | `8081`（Compose） | 否 | `compose.yaml` 映射到宿主机的端口（未设置 `READER_HTTP_ADDR` 时也作为容器监听端口）。 |
-| `READER_BIND_IP` | `127.0.0.1` | 否 | `compose.yaml` 绑定的宿主机网卡地址。 |
-| `READER_DATA_DIR` | `/data` | 否 | 存放本地导入与缓存章节正文的目录（自动创建 `books/` 与 `tmp/`）。 |
-| `READER_PUBLIC_URL` | — | **是** | 浏览器访问的完整 Origin（含 `http://` 或 `https://`、域名/IP 与端口，不含路径），用于 CSRF 校验。 |
-| `READER_COOKIE_SECURE` | `true` | 否 | HTTPS 设为 `true`，HTTP 测试设为 `false`。 |
-| `READER_SETUP_TOKEN` / `READER_SETUP_TOKEN_FILE` | — | 首次初始化 | 首次创建管理员所需的初始化令牌（长度不少于 24 位）。 |
-| `READER_DB_HOST` | `127.0.0.1` | **是** | MySQL 主机地址。 |
-| `READER_DB_PORT` | `3306` | 否 | MySQL 端口。 |
-| `READER_DB_NAME` | — | **是** | MySQL 数据库名（需 `utf8mb4`）。 |
-| `READER_DB_USER` | — | **是** | MySQL 用户名。 |
-| `READER_DB_PASSWORD` / `READER_DB_PASSWORD_FILE` | — | **是** | MySQL 密码或密钥文件路径。 |
-| `READER_DB_TLS_MODE` | `true` | 否 | MySQL TLS 模式：`true`（校验证书）、`false`（可信内网关闭 TLS）或 `skip-verify`。 |
-| `READER_DB_CA_FILE` | — | 否 | 自定义 MySQL TLS 根证书 PEM 文件路径。 |
-
----
-
-### 7. 日常更新与数据备份
-
-```bash
-git pull --ff-only
-docker compose build --pull
-docker compose run --rm reader migrate
 docker compose up -d
 ```
 
-更新前请配套备份 MySQL 数据库和 `reader_data` 数据卷。容器 `/data` 存放书籍章节正文；MySQL 存放用户、书架及阅读进度。**切勿执行 `docker compose down -v`**，否则会删除数据卷。
-
-`.env`、`secrets/`、`data/`、日志、二进制、镜像包及私钥均已被 Git 和 Docker 构建上下文排除，请勿使用 `git add -f` 提交。
+3. **初始化管理员**：
+首次启动后，访问系统首页，页面将引导输入 `READER_SETUP_TOKEN` 完成首任管理员账号创建。
 
 ---
 
-## 本地开发与检查
+### 方式二：本地直接运行
 
-需要 Go 1.24+、Node 22 和外部 MySQL。Windows 可运行 `./build.ps1`。
-
+本地只需 Go 1.24+ 与 Node.js 22：
 ```bash
+# 1. 编译前端
 cd web
-npm ci
-npm test
+npm install
 npm run build
 cd ..
+
+# 2. 拷贝前端静态资源
 mkdir -p cmd/reader/static
-cp -R web/dist/. cmd/reader/static/
-go test ./...
-go vet ./...
-go build -o dist/reader ./cmd/reader
+cp -r web/dist/* cmd/reader/static/
+
+# 3. 运行服务
+go run ./cmd/reader
 ```
 
-Go 源码中的静态占位文件仅用于编译，不是可用 UI；必须先构建并复制前端，Dockerfile 会自动完成这些步骤。普通单元测试不连接数据库；真实数据库集成测试需要显式设置 `READER_INTEGRATION=1`，仅应针对专用测试库运行。
+---
 
-## 许可
+## 环境变量配置速查
 
-采用 GPL-3.0-or-later，见 [LICENSE](LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。功能及书源接口参考原 Reader 项目。真实书源由用户合法提供，不随代码发布。
+| 环境变量 | 默认值 | 必填 | 说明 |
+| :--- | :--- | :---: | :--- |
+| `READER_HTTP_ADDR` | `:8080` | 否 | 服务监听地址 |
+| `READER_DATA_DIR` | `/data` | 否 | 数据持久化存储目录（缓存、TXT/EPUB 文件） |
+| `READER_PUBLIC_URL` | — | **是** | 外部完整访问地址（用于 CSRF 与安全 Origin 校验） |
+| `READER_COOKIE_SECURE` | `true` | 否 | 是否启用 Secure Cookie（HTTPS 环境设为 true） |
+| `READER_SETUP_TOKEN` | — | 首次 | 首次运行初始化引导 Token（至少 24 位字符） |
+| `READER_DB_DRIVER` | `mysql` | 否 | 数据库驱动类型：`mysql` 或 `sqlite` |
+| `READER_DB_HOST` | `127.0.0.1`| MySQL 时必填 | MySQL 主机地址 |
+| `READER_DB_PORT` | `3306` | 否 | MySQL 端口 |
+| `READER_DB_NAME` | — | MySQL 时必填 | MySQL 数据库名称 |
+| `READER_DB_USER` | — | MySQL 时必填 | MySQL 用户名 |
+| `READER_DB_PASSWORD` | — | MySQL 时必填 | MySQL 密码 |
+
+---
+
+## 开源协议
+
+本项目基于 **GPL-3.0-or-later** 协议开源，详见 [LICENSE](LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。用户需自行合法管理并提供书源，本项目不内置任何侵权内容或第三方规则。

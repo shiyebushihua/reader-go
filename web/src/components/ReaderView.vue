@@ -4,6 +4,8 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   List,
   Settings2,
   BookmarkPlus,
@@ -30,10 +32,18 @@ import {
   Search,
   RefreshCw,
   ArrowUpDown,
-  LocateFixed
+  LocateFixed,
+  Download,
+  Headphones,
+  Play,
+  Pause,
+  Square,
+  Plus,
+  Languages
 } from 'lucide-vue-next'
-import { api, ApiError, id, message } from '../api'
-import type { Book, Chapter, ChapterContent, Progress, Bookmark, Settings, SearchResult, Source } from '../types'
+import { api, ApiError, id, message, getExportUrl } from '../api'
+import { toTraditional, toSimplified } from '../chinese'
+import type { Book, Chapter, ChapterContent, Progress, Bookmark, Settings, SearchResult, Source, BookSourceCandidate, PurifyRule, BookCacheStatus } from '../types'
 import { settingLimits, settingsError } from '../validation'
 import {
   saveBook,
@@ -41,7 +51,8 @@ import {
   saveChapters,
   getChapters,
   saveChapterContent,
-  getChapterContent
+  getChapterContent,
+  getCachedChapterIds
 } from '../offline'
 import { showConfirm } from '../confirm'
 
@@ -56,6 +67,10 @@ interface ExtendedReaderPrefs {
   transitionSpeed: 'off' | 'fast' | 'normal' | 'smooth'
   pageMode: 'scroll' | 'slide'
   adaptiveWidth: boolean
+  indent?: boolean
+  letterSpacing?: number
+  wakeLock?: boolean
+  chineseMode?: 'original' | 'simplified' | 'traditional'
 }
 
 const props = defineProps<{ bookId: string; initialChapter?: string }>()
@@ -67,7 +82,7 @@ const chapters = ref<Chapter[]>([]), content = ref<ChapterContent | null>(null),
 const loading = ref(true), chapterLoading = ref(false), error = ref(''), notice = ref('')
 const panel = ref<'toc' | 'settings' | 'bookmarks' | ''>('')
 const position = ref(0), version = ref(0), dirty = ref(false), saving = ref(false), conflict = ref(false)
-const savedLabel = ref('尚未修改'), note = ref(''), bookmarkBusy = ref(false), settingsBusy = ref(false)
+const savedLabel = ref('进度一致'), note = ref(''), bookmarkBusy = ref(false), settingsBusy = ref(false), showAdvancedPrefs = ref(false)
 const tocQuery = ref(''), scroller = ref<HTMLElement | null>(null), isFullscreen = ref(false)
 const tocReversed = ref(false)
 const lastTargetChapterId = ref('')
@@ -92,6 +107,48 @@ const sourcesMap = ref<Record<string, string>>({})
 const enabledSourceIds = ref<string[]>([])
 const lastDayTheme = ref('sepia')
 
+// Legado Feature: Real-time Clock, Battery & Screen WakeLock
+const cachedChapterIds = ref<Set<string>>(new Set())
+const currentTimeStr = ref('')
+const batteryLevel = ref('')
+let clockTimer: any = null
+let wakeLockSentinel: any = null
+
+function updateStatusInfo() {
+  const d = new Date()
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  currentTimeStr.value = `${hh}:${mm}`
+
+  if (typeof navigator !== 'undefined' && (navigator as any).getBattery) {
+    (navigator as any).getBattery().then((battery: any) => {
+      batteryLevel.value = `${Math.round(battery.level * 100)}%`
+    }).catch(() => {})
+  }
+}
+
+async function requestWakeLock() {
+  if (typeof navigator !== 'undefined' && 'wakeLock' in navigator && (navigator as any).wakeLock) {
+    try {
+      wakeLockSentinel = await (navigator as any).wakeLock.request('screen')
+    } catch {}
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLockSentinel) {
+    try { wakeLockSentinel.release() } catch {}
+    wakeLockSentinel = null
+  }
+}
+
+async function refreshCachedChapterIds() {
+  try {
+    const ids = await getCachedChapterIds(props.bookId)
+    cachedChapterIds.value = new Set(ids)
+  } catch {}
+}
+
 // Configurable Reading Parameters
 const prefs = reactive<ExtendedReaderPrefs>({
   theme: 'sepia',
@@ -103,7 +160,11 @@ const prefs = reactive<ExtendedReaderPrefs>({
   textAlign: 'justify',
   transitionSpeed: 'normal',
   pageMode: 'scroll',
-  adaptiveWidth: false
+  adaptiveWidth: false,
+  indent: true,
+  letterSpacing: 0.5,
+  wakeLock: true,
+  chineseMode: 'original'
 })
 
 // Themes metadata (7 major-reader inspired eye-care themes)
@@ -142,19 +203,224 @@ const currentFont = computed(() => {
 })
 
 const index = computed(() => chapters.value.findIndex(c => c.id === content.value?.id))
-const currentChapterName = computed(() => content.value?.title || (index.value >= 0 ? chapters.value[index.value]?.title : ''))
+function convertText(text: string): string {
+  if (!text) return ''
+  if (prefs.chineseMode === 'traditional') return toTraditional(text)
+  if (prefs.chineseMode === 'simplified') return toSimplified(text)
+  return text
+}
+const currentChapterName = computed(() => {
+  const raw = content.value?.title || (index.value >= 0 ? chapters.value[index.value]?.title : '')
+  return convertText(raw)
+})
 const toc = computed(() => {
   const list = chapters.value.filter(c => c.title.toLowerCase().includes(tocQuery.value.toLowerCase()))
   return tocReversed.value ? [...list].reverse() : list
 })
 
+// Legado Feature: Text Purification Rules
+const defaultPurifyRules: PurifyRule[] = [
+  { id: 'p1', name: '净化网站广告水印', pattern: '(?:请收藏本站|笔趣阁|最新网址|wap\\.|www\\.).*?(?:\\r?\\n|$)', replacement: '', enabled: true, isRegex: true },
+  { id: 'p2', name: '净化章节末尾催更求票', pattern: '（(?:本章未完|继续阅读|求推荐票|求月票|求打赏|加更).*?）', replacement: '', enabled: true, isRegex: true }
+]
+function loadPurifyRules(): PurifyRule[] {
+  if (typeof localStorage === 'undefined') return defaultPurifyRules
+  try {
+    const raw = localStorage.getItem('reader_purify_rules_v1')
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return defaultPurifyRules
+}
+const purifyRules = ref<PurifyRule[]>(loadPurifyRules())
+const settingsActiveTab = ref<'prefs' | 'purify'>('prefs')
+const newRuleName = ref('')
+const newRulePattern = ref('')
+const newRuleReplacement = ref('')
+const newRuleIsRegex = ref(true)
+
+watch(purifyRules, val => {
+  if (typeof localStorage !== 'undefined') {
+    try { localStorage.setItem('reader_purify_rules_v1', JSON.stringify(val)) } catch {}
+  }
+}, { deep: true })
+
+function addPurifyRule() {
+  if (!newRulePattern.value.trim()) return
+  purifyRules.value.push({
+    id: 'pr_' + Date.now(),
+    name: newRuleName.value.trim() || '自定义净化规则 ' + (purifyRules.value.length + 1),
+    pattern: newRulePattern.value.trim(),
+    replacement: newRuleReplacement.value,
+    enabled: true,
+    isRegex: newRuleIsRegex.value
+  })
+  newRuleName.value = ''
+  newRulePattern.value = ''
+  newRuleReplacement.value = ''
+}
+function removePurifyRule(id: string) {
+  purifyRules.value = purifyRules.value.filter(r => r.id !== id)
+}
+function applyPurify(text: string): string {
+  let res = text
+  for (const rule of purifyRules.value) {
+    if (!rule.enabled || !rule.pattern) continue
+    try {
+      if (rule.isRegex) {
+        const re = new RegExp(rule.pattern, 'g')
+        res = res.replace(re, rule.replacement || '')
+      } else {
+        res = res.replaceAll(rule.pattern, rule.replacement || '')
+      }
+    } catch {}
+  }
+  return res.trim()
+}
+
 const paragraphs = computed(() => {
   if (!content.value?.content) return []
   return content.value.content
     .split(/\r?\n+/)
-    .map(p => p.trim())
+    .map(p => convertText(applyPurify(p.trim())))
     .filter(p => p.length > 0)
 })
+
+// Legado Feature: Pure Frontend Web Speech API Audio Reader (TTS)
+const ttsActive = ref(false)
+const ttsPlaying = ref(false)
+const ttsIndex = ref(0)
+const ttsRate = ref(1.0)
+let speechUtterance: SpeechSynthesisUtterance | null = null
+
+function initTts() {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    notice.value = '当前浏览器不支持语音朗读 (Web Speech API)'
+    setTimeout(() => { notice.value = '' }, 3000)
+    return false
+  }
+  return true
+}
+function speakCurrentParagraph() {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
+  window.speechSynthesis.cancel()
+  if (!ttsActive.value || !ttsPlaying.value) return
+  if (ttsIndex.value >= paragraphs.value.length) {
+    if (index.value < chapters.value.length - 1) {
+      notice.value = '本章朗读完毕，正在载入下一章…'
+      setTimeout(() => { notice.value = '' }, 2500)
+      openChapter(chapters.value[index.value + 1].id, 0, false).then(() => {
+        ttsIndex.value = 0
+        speakCurrentParagraph()
+      })
+    } else {
+      notice.value = '全书已朗读完毕'
+      stopTts()
+    }
+    return
+  }
+  const text = paragraphs.value[ttsIndex.value]
+  if (!text || !text.trim()) {
+    ttsIndex.value++
+    speakCurrentParagraph()
+    return
+  }
+  speechUtterance = new SpeechSynthesisUtterance(text)
+  speechUtterance.rate = ttsRate.value
+  speechUtterance.lang = 'zh-CN'
+  speechUtterance.onend = () => {
+    if (ttsActive.value && ttsPlaying.value) {
+      ttsIndex.value++
+      speakCurrentParagraph()
+    }
+  }
+  speechUtterance.onerror = (e) => {
+    if (e.error !== 'canceled' && e.error !== 'interrupted') {
+      ttsPlaying.value = false
+    }
+  }
+  window.speechSynthesis.speak(speechUtterance)
+}
+function startTts(fromIndex = 0) {
+  if (!initTts()) return
+  if (!paragraphs.value.length) return
+  ttsActive.value = true
+  ttsPlaying.value = true
+  ttsIndex.value = Math.max(0, Math.min(fromIndex, paragraphs.value.length - 1))
+  speakCurrentParagraph()
+}
+function pauseTts() {
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    window.speechSynthesis.cancel()
+  }
+  ttsPlaying.value = false
+}
+function resumeTts() {
+  ttsPlaying.value = true
+  speakCurrentParagraph()
+}
+function stopTts() {
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    window.speechSynthesis.cancel()
+  }
+  ttsActive.value = false
+  ttsPlaying.value = false
+  ttsIndex.value = 0
+}
+function nextTtsParagraph() {
+  if (ttsIndex.value < paragraphs.value.length - 1) {
+    ttsIndex.value++
+    if (ttsPlaying.value) speakCurrentParagraph()
+  }
+}
+function prevTtsParagraph() {
+  if (ttsIndex.value > 0) {
+    ttsIndex.value--
+    if (ttsPlaying.value) speakCurrentParagraph()
+  }
+}
+function setTtsRate(rate: number) {
+  ttsRate.value = rate
+  if (ttsPlaying.value) speakCurrentParagraph()
+}
+
+// Legado Feature: Batch Offline Chapter Caching
+const cacheModalOpen = ref(false)
+const cachingBusy = ref(false)
+const cacheProgress = ref<{ total: number; cached: number }>({ total: 0, cached: 0 })
+
+async function openCacheModal() {
+  cacheModalOpen.value = true
+  try {
+    const status = await api<BookCacheStatus>(`${path}/cache/status`)
+    cacheProgress.value = {
+      total: status.totalChapters || chapters.value.length,
+      cached: status.cachedChapters || 0
+    }
+  } catch {}
+}
+async function triggerBatchCache(count: number) {
+  if (cachingBusy.value) return
+  cachingBusy.value = true
+  try {
+    const curIndex = index.value >= 0 ? index.value : 0
+    const res = await api<{ ok: boolean; cached: number; skipped: number; total: number }>(`${path}/cache`, 'POST', {
+      fromOrdinal: curIndex,
+      count: count === 0 ? chapters.value.length : count
+    })
+    notice.value = `已成功提交缓存任务，本次缓存 ${res.cached} 章（跳过已存在 ${res.skipped} 章）`
+    setTimeout(() => { notice.value = '' }, 4000)
+    const status = await api<BookCacheStatus>(`${path}/cache/status`)
+    cacheProgress.value = {
+      total: status.totalChapters || chapters.value.length,
+      cached: status.cachedChapters || 0
+    }
+  } catch (e) {
+    notice.value = `缓存失败：${message(e)}`
+    setTimeout(() => { notice.value = '' }, 4000)
+  } finally {
+    cachingBusy.value = false
+  }
+}
 
 let timer: ReturnType<typeof setTimeout> | undefined
 let restoring = false
@@ -598,6 +864,24 @@ async function executeSearchSources() {
   changeSourceLoading.value = true
   changeSourceError.value = ''
   try {
+    if (changeSourceQuery.value.trim() === (book.value?.title || '').trim()) {
+      try {
+        const candidates = await api<BookSourceCandidate[]>(`${path}/sources`)
+        if (Array.isArray(candidates) && candidates.length > 0) {
+          changeSourceResults.value = candidates.map(c => ({
+            sourceId: c.sourceId,
+            title: c.title,
+            author: c.author,
+            url: c.bookUrl || '',
+            cover: c.cover || '',
+            intro: '',
+            latestChapter: c.latestChapter
+          }))
+          changeSourceLoading.value = false
+          return
+        }
+      } catch {}
+    }
     if (!enabledSourceIds.value.length) {
       await loadSourcesList()
     }
@@ -670,7 +954,7 @@ async function saveProgress(): Promise<boolean> {
       const saved = await api<Progress>(`${path}/progress`, 'PUT', snapshot)
       version.value = saved.version
       dirty.value = content.value?.id !== snapshot.chapterId || Math.abs(position.value - snapshot.position) > 0.0001
-      savedLabel.value = dirty.value ? '待保存' : '进度已同步'
+      savedLabel.value = dirty.value ? '待同步' : '已同步到云端'
       if (book.value) {
         book.value.progress = {
           chapterId: snapshot.chapterId,
@@ -684,7 +968,7 @@ async function saveProgress(): Promise<boolean> {
       if (e instanceof ApiError && e.status===409) {
         conflict.value = true
         error.value = '另一设备已更新阅读进度。请选择要保留的位置。'
-        savedLabel.value = '保存失败'
+        savedLabel.value = '同步冲突'
         return false
       } else {
         if (book.value) {
@@ -697,11 +981,11 @@ async function saveProgress(): Promise<boolean> {
         }
         if (isFromCache.value || !navigator.onLine || (e instanceof ApiError && e.status === 0)) {
           dirty.value = false
-          savedLabel.value = '离线已保存'
+          savedLabel.value = '已保存到本机（离线）'
           return true
         }
         error.value = message(e)
-        savedLabel.value = '保存失败'
+        savedLabel.value = '同步失败，可重试'
         return false
       }
     } finally {
@@ -829,6 +1113,7 @@ function toggle(value: 'toc' | 'settings' | 'bookmarks') {
   if (panel.value) {
     showControls.value = true
     if (panel.value === 'toc') {
+      void refreshCachedChapterIds()
       void scrollToActiveTocItem()
     }
   }
@@ -852,10 +1137,10 @@ function keydown(e: KeyboardEvent) {
     return
   }
   if (inInput || panel.value || changeSourceOpen.value) return
-  if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+  if (e.key === 'ArrowLeft' || e.key === 'PageUp' || (prefs.pageMode === 'slide' && e.key === 'ArrowUp')) {
     e.preventDefault()
     prevPage()
-  } else if (e.key === 'ArrowRight' || e.key === 'PageDown') {
+  } else if (e.key === 'ArrowRight' || e.key === 'PageDown' || (prefs.pageMode === 'slide' && e.key === 'ArrowDown')) {
     e.preventDefault()
     nextPage()
   } else if (e.key === ' ') {
@@ -880,10 +1165,17 @@ function adjustParaSpacing(delta: number) {
   const next = Math.round((prefs.paraSpacing + delta) * 10) / 10
   prefs.paraSpacing = Math.min(2.5, Math.max(0.4, next))
   saveLocalPrefs()
+  saveLocalPrefs()
+}
+
+function adjustLetterSpacing(delta: number) {
+  const next = Math.round(((prefs.letterSpacing || 0) + delta) * 10) / 10
+  prefs.letterSpacing = Math.min(3, Math.max(0, next))
+  saveLocalPrefs()
 }
 
 watch(
-  () => [prefs.fontSize, prefs.lineHeight, prefs.paraSpacing, prefs.fontFamily, prefs.width, prefs.textAlign, prefs.pageMode, prefs.adaptiveWidth],
+  () => [prefs.fontSize, prefs.lineHeight, prefs.paraSpacing, prefs.fontFamily, prefs.width, prefs.textAlign, prefs.pageMode, prefs.adaptiveWidth, prefs.indent, prefs.letterSpacing, prefs.wakeLock, prefs.chineseMode],
   () => {
     saveLocalPrefs()
     if (content.value) restore(position.value)
@@ -904,6 +1196,10 @@ function handleResize() {
 
 onMounted(() => {
   load()
+  updateStatusInfo()
+  clockTimer = setInterval(updateStatusInfo, 30000)
+  if (prefs.wakeLock) void requestWakeLock()
+  void refreshCachedChapterIds()
   window.addEventListener('beforeunload', beforeUnload)
   window.addEventListener('keydown', keydown)
   window.addEventListener('resize', handleResize)
@@ -920,6 +1216,9 @@ onUnmounted(() => {
   clearTimeout(timer)
   clearTimeout(slideLockTimer)
   clearTimeout(slideSnapTimer)
+  stopTts()
+  clearInterval(clockTimer)
+  releaseWakeLock()
   window.removeEventListener('beforeunload', beforeUnload)
   window.removeEventListener('keydown', keydown)
   window.removeEventListener('resize', handleResize)
@@ -936,13 +1235,15 @@ defineExpose({canLeave})
     :style="{
       '--reader-para-spacing': `${prefs.paraSpacing}em`,
       '--reader-align': prefs.textAlign,
+      '--reader-indent': prefs.indent ? '2em' : '0',
+      '--reader-letter-spacing': `${prefs.letterSpacing || 0}px`,
       '--reader-duration': speedDurations[prefs.transitionSpeed] || '240ms'
     }"
   >
     <!-- Top Floating Capsule Header -->
     <header :class="['reader-floating-header', { hidden: !showControls && !panel && !changeSourceOpen }]">
       <div class="reader-header-left">
-        <a class="reader-header-back" :href="`#/book/${id(bookId)}`" title="返回书籍详情">
+        <a class="reader-header-back" href="#/library" title="返回书架">
           <ArrowLeft :size="16" />
           <span>书架</span>
         </a>
@@ -1002,6 +1303,41 @@ defineExpose({canLeave})
         >
           <BookmarkIcon :size="18" />
         </button>
+        <!-- Batch Offline Cache Button (Desktop) -->
+        <button
+          class="desktop-only"
+          :class="{ selected: cacheModalOpen }"
+          @click="openCacheModal"
+          aria-label="离线缓存"
+          title="批量离线缓存"
+        >
+          <Download :size="17" />
+        </button>
+
+        <!-- TTS Audio Player Button (Desktop) -->
+        <button
+          class="desktop-only"
+          :class="{ selected: ttsActive }"
+          @click="ttsActive ? stopTts() : startTts(0)"
+          aria-label="听书朗读"
+          title="听书朗读 (TTS)"
+        >
+          <Headphones :size="17" />
+          <Headphones :size="17" />
+        </button>
+
+        <!-- Export Book TXT Button (Desktop) -->
+        <a
+          class="button desktop-only"
+          :href="getExportUrl(props.bookId)"
+          target="_blank"
+          aria-label="导出TXT"
+          title="导出全书已缓存章节为TXT文档"
+          style="text-decoration: none; padding: 0 10px; display: inline-flex; align-items: center; gap: 4px;"
+        >
+          <Download :size="16" />
+          <span class="tool-label">导出</span>
+        </a>
 
         <!-- Settings Button -->
         <button
@@ -1101,6 +1437,7 @@ defineExpose({canLeave})
               >
                 <small>{{ chapter.index + 1 }}</small>
                 <span>{{ chapter.title }}</span>
+                <span v-if="cachedChapterIds.has(chapter.id)" class="toc-cached-badge">已缓存</span>
                 <Check v-if="content?.id === chapter.id" :size="14" style="margin-left: auto;" />
               </button>
               <p v-if="!toc.length" class="muted" style="text-align: center; padding: 20px 0;">未找到匹配章节</p>
@@ -1108,7 +1445,92 @@ defineExpose({canLeave})
           </template>
 
           <!-- 2. Settings Panel -->
-          <form v-else-if="panel === 'settings'" class="form-stack" @submit.prevent="saveSettings">
+          <div v-else-if="panel === 'settings'" class="form-stack">
+            <!-- Tabs: Preferences vs Purification Rules -->
+            <div class="settings-tab-bar">
+              <button
+                type="button"
+                :class="['tab-btn', { active: settingsActiveTab === 'prefs' }]"
+                @click="settingsActiveTab = 'prefs'"
+              >
+                排版与操作
+              </button>
+              <button
+                type="button"
+                :class="['tab-btn', { active: settingsActiveTab === 'purify' }]"
+                @click="settingsActiveTab = 'purify'"
+              >
+                净化规则 ({{ purifyRules.filter(r => r.enabled).length }}/{{ purifyRules.length }})
+              </button>
+            </div>
+
+            <!-- Tab 1: Prefs -->
+            <form v-if="settingsActiveTab === 'prefs'" class="form-stack" @submit.prevent="saveSettings">
+              <!-- Quick Actions Bar -->
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+                <button
+                  type="button"
+                  class="button secondary"
+                  @click="panel = ''; ttsActive ? stopTts() : startTts(0)"
+                >
+                  <Headphones :size="15" />
+                  <span>{{ ttsActive ? '关闭听书' : '听书朗读' }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="button secondary"
+                  @click="panel = ''; openCacheModal()"
+                >
+                  <Download :size="15" />
+                  <span>离线缓存</span>
+                </button>
+              </div>
+            <!-- 排版实时预览卡片 (UI改造 U06) -->
+            <div
+              class="reader-prefs-preview"
+              :class="`theme-${prefs.theme}`"
+              :style="{
+                fontFamily: currentFont,
+                fontSize: `${Math.min(Math.max(prefs.fontSize, 15), 22)}px`,
+                lineHeight: prefs.lineHeight,
+                letterSpacing: `${prefs.letterSpacing || 0}px`,
+                textAlign: prefs.textAlign
+              }"
+            >
+              <div class="preview-header">
+                <Sparkles :size="12" />
+                <span>排版实时预览</span>
+              </div>
+              <p>行云流水，落纸如烟。文字在指尖静谧流淌，于方寸之间照见辽阔天地。</p>
+            </div>
+
+            <!-- 第一层：高频排版核心调节 (常驻) -->
+            <!-- Font Size -->
+            <div class="setting-row">
+              <div class="setting-header">
+                <span>正文字号</span>
+                <div class="setting-stepper">
+                  <button type="button" class="stepper-btn" @click="adjustFontSize(-1)">−</button>
+                  <span style="font-weight: 600; min-width: 48px; text-align: center;">{{ prefs.fontSize }}px</span>
+                  <button type="button" class="stepper-btn" @click="adjustFontSize(1)">+</button>
+                </div>
+              </div>
+              <input v-model.number="prefs.fontSize" type="range" :min="settingLimits.fontSize.min" :max="settingLimits.fontSize.max" step="1" />
+            </div>
+
+            <!-- Line Height -->
+            <div class="setting-row">
+              <div class="setting-header">
+                <span>行距倍率</span>
+                <div class="setting-stepper">
+                  <button type="button" class="stepper-btn" @click="adjustLineHeight(-0.1)">−</button>
+                  <span style="font-weight: 600; min-width: 48px; text-align: center;">{{ prefs.lineHeight }}x</span>
+                  <button type="button" class="stepper-btn" @click="adjustLineHeight(0.1)">+</button>
+                </div>
+              </div>
+              <input v-model.number="prefs.lineHeight" type="range" :min="settingLimits.lineHeight.min" :max="settingLimits.lineHeight.max" step="0.1" />
+            </div>
+
             <!-- Page Navigation Mode Selection -->
             <div class="settings-section-title">
               <Columns :size="13" style="display: inline; margin-right: 4px;" />
@@ -1139,19 +1561,6 @@ defineExpose({canLeave})
               </button>
             </div>
 
-            <!-- Mobile / Responsive Viewport Mode -->
-            <div class="settings-section-title">
-              <Smartphone :size="13" style="display: inline; margin-right: 4px;" />
-              移动端与排版适应
-            </div>
-            <div class="toggle-option-card" @click="prefs.adaptiveWidth = !prefs.adaptiveWidth">
-              <div class="toggle-info">
-                <strong>手机全宽自适应排版</strong>
-                <small>针对小屏移动端与宽屏自适应铺展，消除两侧白边</small>
-              </div>
-              <input type="checkbox" :checked="prefs.adaptiveWidth" @click.stop="prefs.adaptiveWidth = !prefs.adaptiveWidth" />
-            </div>
-
             <!-- Theme Color Swatches -->
             <div class="settings-section-title">
               <Palette :size="13" style="display: inline; margin-right: 4px;" />
@@ -1170,7 +1579,7 @@ defineExpose({canLeave})
               </div>
             </div>
 
-            <!-- Typography Engine Selection -->
+            <!-- 第二层：精选中文字体与简繁转换 -->
             <div class="settings-section-title">
               <Type :size="13" style="display: inline; margin-right: 4px;" />
               精选中文字体
@@ -1189,116 +1598,262 @@ defineExpose({canLeave})
               </div>
             </div>
 
-            <!-- Font Size -->
-            <div class="setting-row">
-              <div class="setting-header">
-                <span>正文字号</span>
-                <div class="setting-stepper">
-                  <button type="button" class="stepper-btn" @click="adjustFontSize(-1)">−</button>
-                  <span style="font-weight: 600; min-width: 48px; text-align: center;">{{ prefs.fontSize }}px</span>
-                  <button type="button" class="stepper-btn" @click="adjustFontSize(1)">+</button>
+            <!-- Chinese Simplified / Traditional Switch -->
+            <div class="settings-section-title">
+              <Languages :size="13" style="display: inline; margin-right: 4px;" />
+              简繁转换
+            </div>
+            <div class="mode-selector-grid" style="grid-template-columns: repeat(3, 1fr);">
+              <button
+                type="button"
+                :class="['mode-tab-btn', { active: !prefs.chineseMode || prefs.chineseMode === 'original' }]"
+                @click="prefs.chineseMode = 'original'; saveLocalPrefs()"
+              >
+                <div class="mode-text">
+                  <strong>原文</strong>
+                  <small>书源原始字型</small>
+                </div>
+              </button>
+              <button
+                type="button"
+                :class="['mode-tab-btn', { active: prefs.chineseMode === 'simplified' }]"
+                @click="prefs.chineseMode = 'simplified'; saveLocalPrefs()"
+              >
+                <div class="mode-text">
+                  <strong>简体</strong>
+                  <small>规范简体中文</small>
+                </div>
+              </button>
+              <button
+                type="button"
+                :class="['mode-tab-btn', { active: prefs.chineseMode === 'traditional' }]"
+                @click="prefs.chineseMode = 'traditional'; saveLocalPrefs()"
+              >
+                <div class="mode-text">
+                  <strong>繁体</strong>
+                  <small>正体/繁体中文</small>
+                </div>
+              </button>
+            </div>
+
+            <!-- 第三层：更多排版细节 (折叠面板，功能06 & UI U06) -->
+            <button
+              type="button"
+              class="advanced-prefs-toggle"
+              :class="{ open: showAdvancedPrefs }"
+              @click="showAdvancedPrefs = !showAdvancedPrefs"
+            >
+              <div class="toggle-title">
+                <Sliders :size="14" />
+                <span>更多排版与显示细节</span>
+              </div>
+              <ChevronUp v-if="showAdvancedPrefs" :size="15" />
+              <ChevronDown v-else :size="15" />
+            </button>
+
+            <div v-show="showAdvancedPrefs" class="advanced-prefs-body">
+              <!-- Paragraph Spacing -->
+              <div class="setting-row">
+                <div class="setting-header">
+                  <span>段落间距</span>
+                  <div class="setting-stepper">
+                    <button type="button" class="stepper-btn" @click="adjustParaSpacing(-0.2)">−</button>
+                    <span style="font-weight: 600; min-width: 48px; text-align: center;">{{ prefs.paraSpacing }}em</span>
+                    <button type="button" class="stepper-btn" @click="adjustParaSpacing(0.2)">+</button>
+                  </div>
+                </div>
+                <input v-model.number="prefs.paraSpacing" type="range" min="0.4" max="2.4" step="0.1" />
+              </div>
+
+              <!-- Letter Spacing -->
+              <div class="setting-row">
+                <div class="setting-header">
+                  <span>字间微距</span>
+                  <div class="setting-stepper">
+                    <button type="button" class="stepper-btn" @click="adjustLetterSpacing(-0.2)">−</button>
+                    <span style="font-weight: 600; min-width: 48px; text-align: center;">{{ prefs.letterSpacing || 0 }}px</span>
+                    <button type="button" class="stepper-btn" @click="adjustLetterSpacing(0.2)">+</button>
+                  </div>
+                </div>
+                <input v-model.number="prefs.letterSpacing" type="range" min="0" max="3" step="0.1" />
+              </div>
+
+              <!-- First Line Indent & WakeLock Toggles -->
+              <div class="toggle-option-card" @click="prefs.indent = !prefs.indent">
+                <div>
+                  <strong>首行缩进 2 字符</strong>
+                  <p>遵循中文出版物标准首行缩进排版</p>
+                </div>
+                <input type="checkbox" :checked="prefs.indent" @click.stop="prefs.indent = !prefs.indent" />
+              </div>
+
+              <div class="toggle-option-card" @click="prefs.wakeLock = !prefs.wakeLock; prefs.wakeLock ? requestWakeLock() : releaseWakeLock()">
+                <div>
+                  <strong>沉浸阅读屏幕常亮</strong>
+                  <p>阅读中保持手机屏幕常亮，防止锁屏熄灭</p>
+                </div>
+                <input type="checkbox" :checked="prefs.wakeLock" @click.stop="prefs.wakeLock = !prefs.wakeLock; prefs.wakeLock ? requestWakeLock() : releaseWakeLock()" />
+              </div>
+
+              <!-- Mobile / Responsive Viewport Mode -->
+              <div class="toggle-option-card" @click="prefs.adaptiveWidth = !prefs.adaptiveWidth">
+                <div class="toggle-info">
+                  <strong>手机全宽自适应排版</strong>
+                  <p>针对小屏移动端自适应铺展，消除两侧白边</p>
+                </div>
+                <input type="checkbox" :checked="prefs.adaptiveWidth" @click.stop="prefs.adaptiveWidth = !prefs.adaptiveWidth" />
+              </div>
+
+              <!-- Reading Width -->
+              <div v-if="!prefs.adaptiveWidth" class="setting-row">
+                <div class="setting-header">
+                  <span>版心宽度</span>
+                  <span style="font-weight: 600;">{{ prefs.width }}px</span>
+                </div>
+                <input v-model.number="prefs.width" type="range" :min="settingLimits.width.min" :max="settingLimits.width.max" step="20" />
+              </div>
+
+              <!-- Text Alignment -->
+              <div class="setting-row">
+                <div class="setting-header">
+                  <span>排版对齐</span>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                  <button
+                    type="button"
+                    :class="['button', { primary: prefs.textAlign === 'justify' }]"
+                    @click="prefs.textAlign = 'justify'"
+                  >
+                    <AlignJustify :size="15" />
+                    两端对齐
+                  </button>
+                  <button
+                    type="button"
+                    :class="['button', { primary: prefs.textAlign === 'left' }]"
+                    @click="prefs.textAlign = 'left'"
+                  >
+                    <AlignLeft :size="15" />
+                    常规左对齐
+                  </button>
                 </div>
               </div>
-              <input v-model.number="prefs.fontSize" type="range" :min="settingLimits.fontSize.min" :max="settingLimits.fontSize.max" step="1" />
-            </div>
 
-            <!-- Line Height -->
-            <div class="setting-row">
-              <div class="setting-header">
-                <span>行距倍率</span>
-                <div class="setting-stepper">
-                  <button type="button" class="stepper-btn" @click="adjustLineHeight(-0.1)">−</button>
-                  <span style="font-weight: 600; min-width: 48px; text-align: center;">{{ prefs.lineHeight }}x</span>
-                  <button type="button" class="stepper-btn" @click="adjustLineHeight(0.1)">+</button>
+              <!-- Animation Transition Speed -->
+              <div class="setting-row">
+                <div class="setting-header">
+                  <span>
+                    <Sparkles :size="13" style="display: inline; margin-right: 4px;" />
+                    页面过渡动效
+                  </span>
                 </div>
-              </div>
-              <input v-model.number="prefs.lineHeight" type="range" :min="settingLimits.lineHeight.min" :max="settingLimits.lineHeight.max" step="0.1" />
-            </div>
-
-            <!-- Paragraph Spacing -->
-            <div class="setting-row">
-              <div class="setting-header">
-                <span>段落间距</span>
-                <div class="setting-stepper">
-                  <button type="button" class="stepper-btn" @click="adjustParaSpacing(-0.2)">−</button>
-                  <span style="font-weight: 600; min-width: 48px; text-align: center;">{{ prefs.paraSpacing }}em</span>
-                  <button type="button" class="stepper-btn" @click="adjustParaSpacing(0.2)">+</button>
-                </div>
-              </div>
-              <input v-model.number="prefs.paraSpacing" type="range" min="0.4" max="2.4" step="0.1" />
-            </div>
-
-            <!-- Reading Width -->
-            <div v-if="!prefs.adaptiveWidth" class="setting-row">
-              <div class="setting-header">
-                <span>版心宽度</span>
-                <span style="font-weight: 600;">{{ prefs.width }}px</span>
-              </div>
-              <input v-model.number="prefs.width" type="range" :min="settingLimits.width.min" :max="settingLimits.width.max" step="20" />
-            </div>
-
-            <!-- Text Alignment -->
-            <div class="setting-row">
-              <div class="setting-header">
-                <span>排版对齐</span>
-              </div>
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                <button
-                  type="button"
-                  :class="['button', { primary: prefs.textAlign === 'justify' }]"
-                  @click="prefs.textAlign = 'justify'"
-                >
-                  <AlignJustify :size="15" />
-                  两端对齐
-                </button>
-                <button
-                  type="button"
-                  :class="['button', { primary: prefs.textAlign === 'left' }]"
-                  @click="prefs.textAlign = 'left'"
-                >
-                  <AlignLeft :size="15" />
-                  常规左对齐
-                </button>
-              </div>
-            </div>
-
-            <!-- Animation Transition Speed -->
-            <div class="setting-row">
-              <div class="setting-header">
-                <span>
-                  <Sparkles :size="13" style="display: inline; margin-right: 4px;" />
-                  页面过渡动效
-                </span>
-              </div>
-              <div class="speed-picker">
-                <div
-                  v-for="s in [
-                    { id: 'off', label: '关闭', hint: '0ms' },
-                    { id: 'fast', label: '快速', hint: '140ms' },
-                    { id: 'normal', label: '标准', hint: '240ms' },
-                    { id: 'smooth', label: '丝滑', hint: '380ms' }
-                  ]"
-                  :key="s.id"
-                  :class="['speed-option', { selected: prefs.transitionSpeed === s.id }]"
-                  @click="prefs.transitionSpeed = (s.id as any)"
-                >
-                  <strong>{{ s.label }}</strong>
-                  <small style="display: block; opacity: 0.7;">{{ s.hint }}</small>
+                <div class="speed-picker">
+                  <div
+                    v-for="s in [
+                      { id: 'off', label: '关闭', hint: '0ms' },
+                      { id: 'fast', label: '快速', hint: '140ms' },
+                      { id: 'normal', label: '标准', hint: '240ms' },
+                      { id: 'smooth', label: '丝滑', hint: '380ms' }
+                    ]"
+                    :key="s.id"
+                    :class="['speed-option', { selected: prefs.transitionSpeed === s.id }]"
+                    @click="prefs.transitionSpeed = (s.id as any)"
+                  >
+                    <strong>{{ s.label }}</strong>
+                    <small style="display: block; opacity: 0.7;">{{ s.hint }}</small>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <!-- Save Action Button -->
+            <!-- Save Action Button (功能07) -->
             <div style="margin-top: 16px;">
               <button class="primary wide" :disabled="settingsBusy">
                 <Save :size="16" />
-                {{ settingsBusy ? '正在同步…' : '保存偏好设置' }}
+                {{ settingsBusy ? '正在同步至云端…' : '同步阅读偏好' }}
               </button>
               <p class="fine-print text-center" style="margin-top: 8px;">
-                修改即时生效，点击保存将偏好同步至云端。
+                排版调整已在当前设备即时生效，点击可同步至账号云端。
               </p>
             </div>
-          </form>
+            </form>
+
+            <!-- Tab 2: Text Purification Rules -->
+            <div v-else class="purify-settings-section">
+              <p class="fine-print" style="margin-bottom: 12px; line-height: 1.5;">
+                正文净化规则：支持关键词和正则表达式过滤，实时对章节内容生效，过滤广告和杂质。
+              </p>
+
+              <!-- Rules List -->
+              <div class="purify-rules-list">
+                <div v-for="rule in purifyRules" :key="rule.id" class="purify-rule-item">
+                  <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;">
+                    <input
+                      type="checkbox"
+                      v-model="rule.enabled"
+                      :id="`rule-${rule.id}`"
+                    />
+                    <div style="min-width: 0; flex: 1;">
+                      <label :for="`rule-${rule.id}`" style="font-weight: 600; font-size: 13px; display: block; cursor: pointer;">
+                        {{ rule.name }}
+                      </label>
+                      <small class="muted" style="display: block; font-family: var(--font-mono); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                        {{ rule.isRegex ? '/' + rule.pattern + '/g' : rule.pattern }} → {{ rule.replacement ? rule.replacement : '(空)' }}
+                      </small>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    class="icon-button danger"
+                    @click="removePurifyRule(rule.id)"
+                    aria-label="删除规则"
+                    title="删除规则"
+                  >
+                    <Trash2 :size="14" />
+                  </button>
+                </div>
+              </div>
+
+              <!-- Add Custom Rule Card -->
+              <div class="cache-stat-box" style="margin-top: 16px;">
+                <div class="settings-section-title" style="margin-bottom: 8px;">
+                  <Plus :size="13" style="display: inline; margin-right: 4px;" />
+                  添加自定义净化规则
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                  <input
+                    v-model="newRuleName"
+                    placeholder="规则名称（选填，如：去除某某广告）"
+                    style="font-size: 13px;"
+                  />
+                  <input
+                    v-model="newRulePattern"
+                    placeholder="匹配模式（关键词或正则表达式）*"
+                    style="font-size: 13px;"
+                  />
+                  <input
+                    v-model="newRuleReplacement"
+                    placeholder="替换内容（选填，默认置空）"
+                    style="font-size: 13px;"
+                  />
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 4px;">
+                    <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer;">
+                      <input type="checkbox" v-model="newRuleIsRegex" />
+                      <span>正则表达式模式</span>
+                    </label>
+                    <button
+                      type="button"
+                      class="button primary"
+                      style="padding: 4px 14px; font-size: 12px;"
+                      :disabled="!newRulePattern.trim()"
+                      @click="addPurifyRule"
+                    >
+                      添加规则
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
 
           <!-- 3. Bookmarks Panel -->
           <template v-else>
@@ -1322,9 +1877,9 @@ defineExpose({canLeave})
               <button
                 class="bookmark-jump"
                 :disabled="chapterLoading || saving"
-                @click="openChapter(mark.chapterId, mark.position)"
+                @click="panel = ''; openChapter(mark.chapterId, mark.position)"
               >
-                <strong>{{ chapters.find(c => c.id === mark.chapterId)?.title || '已保存章节' }}</strong>
+                <strong>{{ mark.chapterTitle || chapters.find(c => c.id === mark.chapterId)?.title || ('第 ' + mark.chapterId + ' 章') }}</strong>
                 <small style="color: var(--accent); font-weight: 600; display: block; margin: 2px 0 4px;">
                   章内 {{ Math.round(mark.position * 100) }}%
                 </small>
@@ -1405,17 +1960,99 @@ defineExpose({canLeave})
                     <span v-if="item.author" class="source-author">作者：{{ item.author }}</span>
                     <span v-if="book?.sourceId === item.sourceId" class="current-badge">当前在用</span>
                   </div>
+                  <p v-if="item.latestChapter" class="source-latest-chapter" style="font-size: 12px; color: var(--accent); margin: 2px 0 0;">
+                    最新：{{ item.latestChapter }}
+                  </p>
                   <p class="source-url-text muted">{{ item.url }}</p>
                   <p v-if="item.intro" class="source-intro-text">{{ item.intro }}</p>
                 </div>
                 <button
                   class="source-action-btn"
                   :disabled="changeSourceSubmitting || book?.sourceId === item.sourceId"
+                  @click.stop="applyChangeSource(item)"
                 >
                   <LoaderCircle v-if="changeSourceSubmitting" class="spin" :size="14" />
                   <span v-else>{{ book?.sourceId === item.sourceId ? '使用中' : '切换此源' }}</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Batch Cache Modal -->
+      <div v-if="cacheModalOpen" class="modal-backdrop" @click="cacheModalOpen = false">
+        <div class="modal-card" style="max-width: 480px;" @click.stop>
+          <div class="modal-header">
+            <div>
+              <h3>批量离线缓存</h3>
+              <p class="muted" style="font-size: 13px; margin-top: 2px;">
+                《{{ book?.title }}》· 下载正文到本地实现秒读
+              </p>
+            </div>
+            <button class="icon-button" @click="cacheModalOpen = false" aria-label="关闭缓存弹窗">
+              <X :size="18" />
+            </button>
+          </div>
+
+          <div class="modal-content" style="padding: 16px 0;">
+            <div class="cache-stat-box" style="margin-bottom: 20px;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 13px;">
+                <span>已缓存进度</span>
+                <strong>
+                  {{ cacheProgress.cached }} / {{ cacheProgress.total || chapters.length }} 章
+                  ({{ Math.round((cacheProgress.cached / Math.max(1, cacheProgress.total || chapters.length)) * 100) }}%)
+                </strong>
+              </div>
+              <div class="progress-bar-track">
+                <div
+                  class="progress-bar-fill"
+                  :style="{ width: `${Math.min(100, Math.round((cacheProgress.cached / Math.max(1, cacheProgress.total || chapters.length)) * 100))}%` }"
+                ></div>
+              </div>
+            </div>
+
+            <div class="settings-section-title" style="margin-bottom: 10px;">
+              从当前阅读位置开始批量缓存
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px;">
+              <button
+                type="button"
+                class="button secondary"
+                :disabled="cachingBusy"
+                @click="triggerBatchCache(20)"
+              >
+                缓存后 20 章
+              </button>
+              <button
+                type="button"
+                class="button secondary"
+                :disabled="cachingBusy"
+                @click="triggerBatchCache(50)"
+              >
+                缓存后 50 章
+              </button>
+              <button
+                type="button"
+                class="button secondary"
+                :disabled="cachingBusy"
+                @click="triggerBatchCache(100)"
+              >
+                缓存后 100 章
+              </button>
+              <button
+                type="button"
+                class="button primary"
+                :disabled="cachingBusy"
+                @click="triggerBatchCache(0)"
+              >
+                缓存全书剩余
+              </button>
+            </div>
+
+            <div v-if="cachingBusy" class="empty" style="padding: 16px 0;">
+              <LoaderCircle class="spin" :size="20" />
+              <p style="font-size: 13px; margin-top: 8px;">正在从书源批量下载缓存章节，请稍候…</p>
             </div>
           </div>
         </div>
@@ -1452,12 +2089,16 @@ defineExpose({canLeave})
             </span>
           </span>
           <h1>
-            {{ content.title }}
+            {{ currentChapterName }}
             <span v-if="isFromCache" class="offline-badge">离线已缓存</span>
           </h1>
 
           <div class="chapter-text" :style="{ textAlign: prefs.textAlign }">
-            <p v-for="(p, i) in paragraphs" :key="i" class="chapter-paragraph">
+            <p
+              v-for="(p, i) in paragraphs"
+              :key="i"
+              :class="['chapter-paragraph', { 'tts-active-paragraph': ttsActive && ttsIndex === i }]"
+            >
               {{ p }}
             </p>
           </div>
@@ -1529,7 +2170,7 @@ defineExpose({canLeave})
         class="reader-micro-status"
         aria-hidden="true"
       >
-        <span class="micro-chapter-title">{{ content.title }}</span>
+        <span class="micro-chapter-title">{{ currentChapterName }}</span>
         <span class="micro-progress-info">
           第 {{ index + 1 }}/{{ chapters.length }} 章
           <template v-if="prefs.pageMode === 'slide'">
@@ -1538,6 +2179,9 @@ defineExpose({canLeave})
           <template v-else>
             · {{ Math.round(position * 100) }}%
           </template>
+        </span>
+        <span v-if="currentTimeStr" class="micro-time-battery">
+          {{ currentTimeStr }}<template v-if="batteryLevel"> · 🔋{{ batteryLevel }}</template>
         </span>
       </div>
     </div>
@@ -1638,12 +2282,50 @@ defineExpose({canLeave})
           class="footer-nav-item"
           :disabled="saving || !dirty || conflict || chapterLoading"
           @click="saveProgress"
-          aria-label="保存进度"
+          aria-label="立即同步进度"
+          :title="dirty ? '将当前阅读进度立即同步至云端' : '当前设备与云端进度已保持一致'"
         >
           <Save :size="18" />
-          <span>{{ saving ? '同步中' : '保存' }}</span>
+          <span>{{ saving ? '同步中' : (dirty ? '立即同步' : '已同步') }}</span>
         </button>
       </div>
     </footer>
+    <!-- Floating TTS Audio Player Capsule -->
+    <div v-if="ttsActive" class="reader-tts-capsule">
+      <div class="tts-capsule-info">
+        <Headphones :size="15" />
+        <span>{{ ttsIndex + 1 }}/{{ paragraphs.length }}段</span>
+      </div>
+      <div class="tts-capsule-controls">
+        <button class="icon-button" @click="prevTtsParagraph" title="上一段" aria-label="上一段">
+          <ChevronLeft :size="15" />
+        </button>
+        <button
+          class="icon-button tts-play-btn"
+          @click="ttsPlaying ? pauseTts() : resumeTts()"
+          :title="ttsPlaying ? '暂停朗读' : '继续朗读'"
+          :aria-label="ttsPlaying ? '暂停朗读' : '继续朗读'"
+        >
+          <Pause v-if="ttsPlaying" :size="15" />
+          <Play v-else :size="15" />
+        </button>
+        <button class="icon-button" @click="nextTtsParagraph" title="下一段" aria-label="下一段">
+          <ChevronRight :size="15" />
+        </button>
+        <button class="icon-button" @click="stopTts" title="停止听书" aria-label="停止听书">
+          <Square :size="13" />
+        </button>
+      </div>
+      <div class="tts-speed-selector">
+        <button
+          v-for="r in [0.8, 1.0, 1.2, 1.5]"
+          :key="r"
+          :class="['tts-rate-tag', { active: ttsRate === r }]"
+          @click="setTtsRate(r)"
+        >
+          {{ r }}x
+        </button>
+      </div>
+    </div>
   </div>
 </template>

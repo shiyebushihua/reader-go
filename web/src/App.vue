@@ -66,12 +66,14 @@ function skipToMain(){const main=document.getElementById('main-content');main?.f
     <main id="main-content" tabindex="-1" :class="isReader&&!changingPassword?'reader-main':'main-content'">
       <div v-if="error" class="error" role="alert">{{error}}</div><div v-if="notice" class="success" role="status">{{notice}}</div>
       <section v-if="changingPassword" class="narrow"><div class="page-header"><div><span class="eyebrow">ACCOUNT SECURITY</span><h1>更新你的密码</h1><p>{{user.mustChangePassword?'首次登录或密码已被重置，请先设置自己的密码。':'定期更新密码，保护你的私人书架。'}}</p></div></div><form class="panel form-stack" @submit.prevent="changePassword"><label>当前密码<input v-model="currentPassword" type="password" autocomplete="current-password" required/></label><label>新密码<input v-model="newPassword" type="password" autocomplete="new-password" maxlength="72" required/><small>10–72 字节；中文等非 ASCII 字符可能占多个字节。</small></label><label>确认新密码<input v-model="confirmPassword" type="password" autocomplete="new-password" maxlength="72" required/></label><button class="primary" :disabled="busy">{{busy?'保存中…':'更新密码'}}</button></form></section>
+      <KeepAlive include="SearchView" :max="1">
       <LibraryView v-if="parts[0]==='library'||parts[0]==='import'" :key="parts[0]" :import-mode="parts[0]==='import'"/>
       <SearchView v-else-if="parts[0]==='search'"/>
       <BookView v-else-if="parts[0]==='book'&&parts[1]" :key="parts[1]" :book-id="parts[1]"/>
       <ReaderView v-else-if="parts[0]==='read'&&parts[1]" ref="reader" :key="parts[1]" :book-id="parts[1]" :initial-chapter="parts[2]"/>
       <AdminView v-else-if="parts[0]==='sources'||(parts[0]==='admin'&&user.role==='admin'&&adminUnlocked)" :key="parts[0]" :current-user="user" :sources-only="parts[0]==='sources'"/>
       <section v-else class="empty"><BookOpen :size="40"/><h1>这一页还没有内容</h1><p>页面不存在，或你没有访问权限。</p><a class="button primary" href="#/library">回到书架</a></section>
+      </KeepAlive>
     </main>
   </div>
   <ConfirmModal />

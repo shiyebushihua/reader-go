@@ -21,7 +21,11 @@ import {
   Sparkles,
   Radar,
   Check,
-  LoaderCircle
+  LoaderCircle,
+  LayoutList,
+  LayoutGrid,
+  Code2,
+  SlidersHorizontal
 } from 'lucide-vue-next'
 import { api, id, message, date } from '../api'
 import type { User, Source, Audit, SearchResult } from '../types'
@@ -63,7 +67,8 @@ const sourceQuery = ref('')
 const sourceEnabledFilter = ref('all')
 const sourceGroups = ref<string[]>([])
 const selectedSourceIds = ref<string[]>([])
-
+const sourceViewMode = ref<'table' | 'cards'>('table')
+const showAdvancedRules = ref(false)
 // 探测清理失效书源结果状态
 const probedAliveIds = ref<Set<string>>(new Set())
 const cleanedDeadList = ref<DeadSourceItem[]>([])
@@ -176,9 +181,9 @@ function handleAuditSizeChange() {
 
 async function deduplicateSources() {
   const ok = await showConfirm({
-    title: '智能书源去重',
-    message: '确定执行智能书源去重吗？系统将自动清理你名下 URL 规范化后重复以及同名冗余的书源，并保留最新版本。',
-    confirmText: '开始去重',
+    title: '合并同名书源',
+    message: '确定合并名下的同名与重复书源吗？系统将自动清理重复项并保留最新有效版本。',
+    confirmText: '开始合并',
     cancelText: '取消',
     danger: false
   })
@@ -190,7 +195,7 @@ async function deduplicateSources() {
     const total = res.total ?? (removed + retained)
     sourcePage.value = 1
     await loadSources()
-    notice.value = `智能去重完成：已自动清理 ${removed} 个重复书源，当前保留 ${retained} 个唯一有效书源（扫描前共 ${total} 个）。`
+    notice.value = `合并完成：已自动整理 ${removed} 个重复书源，当前保留 ${retained} 个有效书源（处理前共 ${total} 个）。`
   }, '')
 }
 
@@ -199,9 +204,9 @@ async function probeAndCleanSources() {
     ? `已勾选的 ${selectedSourceIds.value.length} 个书源`
     : `你名下的全部书源`
   const ok = await showConfirm({
-    title: '失效书源探测与清理',
-    message: `确定开始探测并清理失效书源吗？\n\n系统将并发检测${scopeDesc}，仅清理真正无法访问（域名注销、拒绝连接、超时死链、HTTP 404/5xx）的死源，正常可用的书源将完整保留。`,
-    confirmText: '开始探测清理',
+    title: '检测并清理失效书源',
+    message: `确定开始检测并清理暂不可用的书源吗？\n\n系统将自动检测${scopeDesc}，仅清理真正无法访问的失效书源，正常可用的书源完整保留。`,
+    confirmText: '开始检测清理',
     cancelText: '取消',
     danger: true
   })
@@ -236,9 +241,9 @@ async function probeAndCleanSources() {
     sourcePage.value = 1
     await loadSources()
     if (res.removed > 0) {
-      notice.value = `探测清理完成：共检测 ${res.probed} 个书源，连通正常 ${res.alive} 个，已自动清理 ${res.removed} 个真正无法访问的失效书源。`
+      notice.value = `检测与清理完成：共检测 ${res.probed} 个书源，可用 ${res.alive} 个，已清理 ${res.removed} 个暂不可用的失效书源。`
     } else {
-      notice.value = `探测完成：共检测 ${res.probed} 个书源，全部连通正常，未发现失效死源！`
+      notice.value = `检测完成：共检测 ${res.probed} 个书源，全部可用，未发现失效书源！`
     }
   } catch (e) {
     error.value = message(e)
@@ -357,6 +362,7 @@ function edit(source: Source) {
   editGroup.value = source.group
   editEnabled.value = source.enabled
   editRule.value = JSON.stringify(source.rule || {}, null, 2)
+  showAdvancedRules.value = false
   error.value = ''
   notice.value = ''
 }
@@ -493,7 +499,7 @@ onMounted(load)
     <div>
       <span class="eyebrow">{{ props.sourcesOnly ? 'PERSONAL BOOK SOURCES' : 'A WELL-KEPT READING ROOM' }}</span>
       <h1>{{ props.sourcesOnly ? '书源管理 · 我的书源' : '管理控制台' }}</h1>
-      <p>{{ props.sourcesOnly ? '每个账号独立维护与控制自己的书源，管理员不统一分配。支持探测并一键清理失效死源。' : '管理阅读空间账号与安全审计。书源由各用户在「书源管理」中自主维护。' }}</p>
+      <p>{{ props.sourcesOnly ? '书源是提供在线书籍内容的网站配置，无需理解技术细节，直接导入或启用即可。每个账号独立维护与控制自己的书源。' : '管理阅读空间账号与安全审计。书源由各用户在「书源管理」中自主维护。' }}</p>
     </div>
     <span v-if="!props.sourcesOnly" class="admin-badge"><ShieldCheck :size="16" />管理员专属</span>
     <span v-else class="tag"><Globe2 :size="15" />{{ props.currentUser.username }} 的独立书源库</span>
@@ -700,27 +706,27 @@ onMounted(load)
       <div class="section-heading">
         <div>
           <h2>我的书源列表 <span class="count">{{ sourceTotal }}</span></h2>
-          <small class="muted">书源归当前账号独享控制，支持探测清理失效死源、去重与分页管理</small>
+          <small class="muted">书源是提供在线书籍内容的网站配置，无需理解技术细节，直接导入或启用即可</small>
         </div>
         <div class="actions">
           <button
             class="secondary"
             :disabled="busy || !sourceTotal"
-            title="并发探测书源连通性，自动清理域名失效、拒绝连接或超时无响应的死源"
+            title="并发检测书源连通性，自动清理暂无法访问或超时的失效书源"
             @click="probeAndCleanSources"
           >
             <LoaderCircle v-if="probing" class="spin" :size="16" />
             <Radar v-else :size="16" />
-            {{ probing ? '正在探测清理…' : '清理失效书源' }}
+            {{ probing ? '正在检测连通…' : '检测并清理暂不可用的书源' }}
           </button>
-          <button class="secondary" :disabled="busy || !sourceTotal" @click="deduplicateSources" title="自动规范化 URL 并清理同域名/同名冗余书源">
-            <Sparkles :size="16" />智能去重
+          <button class="secondary" :disabled="busy || !sourceTotal" @click="deduplicateSources" title="自动整理书源网址，合并同名或重复的书源">
+            <Sparkles :size="16" />合并同名书源
           </button>
           <button :disabled="busy || !sources.length" @click="exportSources">
             <Download :size="16" />导出书源
           </button>
           <button class="primary" :disabled="busy" @click="importOpen = !importOpen">
-            <Plus :size="17" />导入书源
+            <Plus :size="17" />导入网络书源
           </button>
         </div>
       </div>
@@ -729,8 +735,8 @@ onMounted(load)
       <div v-if="cleanedDeadList.length > 0" class="panel dead-sources-report">
         <div class="section-heading" style="margin-bottom: 12px;">
           <div>
-            <h3>已自动清理 {{ cleanedDeadList.length }} 个无法探测的失效书源</h3>
-            <small class="muted">以下书源因域名注销、拒绝连接、超时无响应或站点损坏已被清理</small>
+            <h3>已自动清理 {{ cleanedDeadList.length }} 个暂不可用的失效书源</h3>
+            <small class="muted">以下书源因无法访问、连接拒绝或响应超时已自动清理</small>
           </div>
           <button type="button" class="icon-button" aria-label="关闭清理报告" @click="cleanedDeadList = []">
             <X :size="16" />
@@ -772,6 +778,27 @@ onMounted(load)
         </div>
 
         <div class="filter-right" v-if="sources.length">
+          <div class="view-mode-toggle" role="group" aria-label="视图模式">
+            <button
+              type="button"
+              class="view-mode-btn"
+              :class="{ active: sourceViewMode === 'table' }"
+              @click="sourceViewMode = 'table'"
+              title="紧凑表格视图"
+            >
+              <LayoutList :size="15" /> 表格
+            </button>
+            <button
+              type="button"
+              class="view-mode-btn"
+              :class="{ active: sourceViewMode === 'cards' }"
+              @click="sourceViewMode = 'cards'"
+              title="卡片视图"
+            >
+              <LayoutGrid :size="15" /> 卡片
+            </button>
+          </div>
+
           <button
             type="button"
             class="text-button compact-btn"
@@ -798,37 +825,40 @@ onMounted(load)
       <!-- 导入书源面板 -->
       <div v-if="importOpen" class="panel admin-form">
         <div class="section-heading">
-          <h3>导入个人书源 JSON (自动规范化 URL 并去重)</h3>
+          <div>
+            <h3>导入网络书源</h3>
+            <small class="muted">导入标准书源规则，自动去除重复项</small>
+          </div>
           <button class="icon-button" :disabled="busy" @click="importOpen = false" aria-label="关闭导入">
             <X :size="18" />
           </button>
         </div>
         <form class="inline-form" @submit.prevent="previewRemote">
           <label>
-            远程订阅地址
-            <input v-model.trim="remoteUrl" type="url" required placeholder="https://…" />
+            网络书源地址
+            <input v-model.trim="remoteUrl" type="url" required placeholder="https://…/sources.json" />
           </label>
           <button :disabled="busy || !remoteUrl">获取预览</button>
         </form>
-        <p class="fine-print">远程地址只获取预览，不自动导入。导入后的书源仅归你当前账号独立使用。</p>
+        <p class="fine-print">支持粘贴在线 JSON 链接预览并导入；也可直接上传或粘贴规则文件。导入的书源归当前账号独享。</p>
         <label class="file-label">
-          <Upload :size="16" />从 JSON 文件读取
+          <Upload :size="16" />从本地 JSON 文件读取
           <input type="file" accept=".json,application/json" :disabled="busy" @change="readFile" />
         </label>
         <form class="form-stack" @submit.prevent="importSources">
           <label>
-            原始 JSON（单个对象或数组）
+            书源内容（JSON 格式）
             <textarea
               class="code-input"
               v-model="raw"
               rows="10"
               required
               spellcheck="false"
-              placeholder="粘贴合法的书源 JSON"
+              placeholder="在此粘贴书源配置内容"
             />
           </label>
           <label class="checkbox-label">
-            <input v-model="overwrite" type="checkbox" />覆盖已存在的同源配置（若不勾选则自动去重跳过重复项）
+            <input v-model="overwrite" type="checkbox" />覆盖同名已存在书源（未勾选时自动跳过重复项）
           </label>
           <button class="primary" :disabled="busy || !raw.trim()">
             {{ busy ? '处理中…' : '确认导入到我的书源' }}
@@ -839,7 +869,10 @@ onMounted(load)
       <!-- 编辑书源弹窗 -->
       <form v-if="editing" class="panel admin-form form-stack" @submit.prevent="saveSource">
         <div class="section-heading">
-          <h3>编辑书源 · {{ editing.name }}</h3>
+          <div>
+            <h3>编辑书源 · {{ editing.name }}</h3>
+            <small class="muted">修改常用属性；复杂解析规则可按需展开</small>
+          </div>
           <button type="button" class="icon-button" :disabled="busy" @click="editing = null" aria-label="关闭编辑">
             <X :size="18" />
           </button>
@@ -847,45 +880,69 @@ onMounted(load)
         <div class="form-grid">
           <label>
             书源名称
-            <input v-model="editName" required />
+            <input v-model="editName" required placeholder="书源展示名称" />
           </label>
           <label>
             分组
-            <input v-model="editGroup" />
+            <input v-model="editGroup" placeholder="如：精品、备用、漫画" />
           </label>
           <label class="checkbox-label">
             <input v-model="editEnabled" type="checkbox" />启用此书源
           </label>
         </div>
-        <label>
-          原始规则 JSON
-          <textarea class="code-input" v-model="editRule" rows="14" required spellcheck="false" />
-        </label>
-        <button class="primary" :disabled="busy">保存书源</button>
+
+        <div class="advanced-rules-toggle">
+          <button
+            type="button"
+            class="secondary rule-toggle-btn"
+            @click="showAdvancedRules = !showAdvancedRules"
+          >
+            <Code2 :size="15" />
+            {{ showAdvancedRules ? '收起高级规则配置 (JSON)' : '展开高级规则配置 (JSON)' }}
+          </button>
+          <small class="muted">普通修改无需查看代码，如需调整解析规则与请求头请展开编辑。</small>
+        </div>
+
+        <div v-if="showAdvancedRules" class="advanced-rules-box">
+          <label>
+            高级解析规则 (JSON)
+            <textarea class="code-input" v-model="editRule" rows="12" required spellcheck="false" />
+          </label>
+        </div>
+
+        <div class="actions">
+          <button class="primary" :disabled="busy">保存书源</button>
+          <button type="button" :disabled="busy" @click="editing = null">取消</button>
+        </div>
       </form>
 
-      <!-- 搜索检查弹窗 -->
+      <!-- 书源可用性检测弹窗 -->
       <div v-if="checkId" class="panel admin-form">
         <form @submit.prevent="checkSource">
           <div class="section-heading">
-            <h3>检查 · {{ sources.find(s => s.id === checkId)?.name }}</h3>
-            <button type="button" class="icon-button" :disabled="busy" @click="checkId = ''" aria-label="关闭检查">
+            <div>
+              <h3>检测书源可用性 · {{ sources.find(s => s.id === checkId)?.name }}</h3>
+              <small class="muted">输入一个书名模拟搜索，验证该书源是否能正常解析书籍</small>
+            </div>
+            <button type="button" class="icon-button" :disabled="busy" @click="checkId = ''" aria-label="关闭检测">
               <X :size="18" />
             </button>
           </div>
           <div class="inline-form">
             <label>
-              测试关键词
-              <input v-model.trim="checkKeyword" required placeholder="输入一个书名" />
+              检测书名
+              <input v-model.trim="checkKeyword" required placeholder="例如：斗罗大陆 或 剑来" />
             </label>
             <button :disabled="busy || !checkKeyword">
-              <Search :size="16" />{{ busy ? '检查中…' : '运行搜索检查' }}
+              <Search :size="16" />{{ busy ? '正在检测…' : '开始检测可用性' }}
             </button>
           </div>
         </form>
         <div v-if="checkResults">
-          <p style="margin-top: 12px;">返回 {{ checkResults.length }} 条结果。</p>
-          <ul class="check-results">
+          <p style="margin-top: 12px; font-weight: 500;">
+            {{ checkResults.length > 0 ? `检测成功，成功解析 ${checkResults.length} 条书籍结果：` : '未搜索到结果，可能书源暂无该书或规则需调整。' }}
+          </p>
+          <ul class="check-results" v-if="checkResults.length">
             <li v-for="r in checkResults" :key="r.url">
               <strong>{{ r.title }}</strong>
               <span>{{ r.author || '佚名' }}</span>
@@ -895,8 +952,82 @@ onMounted(load)
         </div>
       </div>
 
-      <!-- 书源卡片列表（新增个人自主控制与连通状态列） -->
-      <div class="source-list" v-if="sources.length">
+      <!-- 紧凑表格视图 -->
+      <div v-if="sources.length && sourceViewMode === 'table'" class="table-wrap source-table-wrap">
+        <table class="source-table">
+          <thead>
+            <tr>
+              <th style="width: 44px; text-align: center;">选择</th>
+              <th style="width: 220px;">书源名称与分组</th>
+              <th>网址与状态</th>
+              <th style="width: 100px;">状态</th>
+              <th style="width: 200px; text-align: right;">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="source in sources"
+              :key="source.id"
+              :class="{ 'source-selected': selectedSourceIds.includes(source.id) }"
+            >
+              <td style="text-align: center;">
+                <input
+                  type="checkbox"
+                  :value="source.id"
+                  v-model="selectedSourceIds"
+                  :aria-label="`选择 ${source.name}`"
+                />
+              </td>
+              <td>
+                <div class="source-name-cell">
+                  <strong>{{ source.name }}</strong>
+                  <span class="tag" v-if="source.group">{{ source.group }}</span>
+                </div>
+              </td>
+              <td>
+                <div class="source-url-cell">
+                  <span class="source-url-text">{{ source.url || '未提供网址' }}</span>
+                  <div class="source-control-col" aria-label="书源归属与连通状态">
+                    <span class="ownership-pill">个人书源 · 自主控制</span>
+                    <span v-if="probedAliveIds.has(source.id)" class="probe-alive-pill">
+                      <Check :size="12" /> 可用
+                    </span>
+                  </div>
+                </div>
+              </td>
+              <td>
+                <button
+                  :class="['status-toggle', { enabled: source.enabled }]"
+                  :aria-pressed="source.enabled"
+                  :disabled="busy"
+                  @click="toggleSource(source)"
+                >
+                  {{ source.enabled ? '已启用' : '已停用' }}
+                </button>
+              </td>
+              <td>
+                <div class="actions source-actions-cell">
+                  <button class="text-button" :disabled="busy" @click="checkId = source.id; checkResults = null; checkKeyword = ''">
+                    检测可用性
+                  </button>
+                  <button class="text-button" :disabled="busy" @click="edit(source)">编辑</button>
+                  <button
+                    class="icon-button danger"
+                    :disabled="busy"
+                    @click="deleteSource(source)"
+                    :aria-label="`删除 ${source.name}`"
+                  >
+                    <Trash2 :size="15" />
+                  </button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 卡片列表视图 -->
+      <div v-if="sources.length && sourceViewMode === 'cards'" class="source-list">
         <article
           v-for="source in sources"
           :key="source.id"
@@ -919,13 +1050,12 @@ onMounted(load)
             <small>更新于 {{ date(source.updatedAt) }}</small>
           </div>
 
-          <!-- 新增：个人自主控制与状态列 -->
           <div class="source-control-col" aria-label="书源归属与连通状态">
             <span class="ownership-pill">
               个人书源 · 自主控制
             </span>
             <span v-if="probedAliveIds.has(source.id)" class="probe-alive-pill">
-              <Check :size="12" /> 探测连通正常
+              <Check :size="12" /> 可用
             </span>
           </div>
 
@@ -938,9 +1068,9 @@ onMounted(load)
             >
               {{ source.enabled ? '已启用' : '已停用' }}
             </button>
-            <button :disabled="busy" @click="edit(source)">编辑规则</button>
+            <button :disabled="busy" @click="edit(source)">编辑</button>
             <button :disabled="busy" @click="checkId = source.id; checkResults = null; checkKeyword = ''">
-              测试
+              检测可用性
             </button>
             <button
               class="icon-button danger"
@@ -990,7 +1120,7 @@ onMounted(load)
         <p v-if="sourceQuery || sourceGroup || sourceEnabledFilter !== 'all'">
           尝试清除筛选条件或重置搜索词。
         </p>
-        <p v-else>书源现已由每位用户各自管理，导入你信任的 Legado 书源 JSON 即可开始搜书。</p>
+        <p v-else>书源现已由每位用户各自管理，导入你信任的书源规则 JSON 即可开始搜书。</p>
         <div class="actions">
           <button v-if="sourceQuery || sourceGroup || sourceEnabledFilter !== 'all'" class="secondary" @click="sourceQuery = ''; sourceGroup = ''; sourceEnabledFilter = 'all'; handleFilterChange()">
             重置筛选
