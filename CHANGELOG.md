@@ -2,6 +2,15 @@
 
 All notable changes to the Reader Go project will be documented in this file.
 
+## [v0.0.26] - 2026-11-01
+
+### 🚀 Mobile Source Management Refinement
+- **Mobile-First Card Overhaul**: Re-architected book source cards into a 3-tier adaptive structure (title/toggle, URL/date meta, bottom action row), eliminating cramped horizontal layouts on mobile.
+- **UI Noise Elimination**: Purged redundant text placeholders, AI-filler subtitles, and repetitive pill badges across the source management interface.
+- **Action Button Optimization**: Shortened bulky action button labels to concise, responsive mobile actions (e.g. `清理失效`, `合并重复`, `测试`, `导出`, `导入书源`).
+
+---
+
 ## [v0.0.25] - 2026-11-01
 
 ### 🚀 Highlights

@@ -705,8 +705,7 @@ onMounted(load)
     <section v-if="tab === 'sources'">
       <div class="section-heading">
         <div>
-          <h2>我的书源列表 <span class="count">{{ sourceTotal }}</span></h2>
-          <small class="muted">书源是提供在线书籍内容的网站配置，无需理解技术细节，直接导入或启用即可</small>
+          <h2>我的书源 <span class="count">{{ sourceTotal }}</span></h2>
         </div>
         <div class="actions">
           <button
@@ -715,18 +714,18 @@ onMounted(load)
             title="并发检测书源连通性，自动清理暂无法访问或超时的失效书源"
             @click="probeAndCleanSources"
           >
-            <LoaderCircle v-if="probing" class="spin" :size="16" />
-            <Radar v-else :size="16" />
-            {{ probing ? '正在检测连通…' : '检测并清理暂不可用的书源' }}
+            <LoaderCircle v-if="probing" class="spin" :size="15" />
+            <Radar v-else :size="15" />
+            {{ probing ? '正在检测…' : '清理失效' }}
           </button>
-          <button class="secondary" :disabled="busy || !sourceTotal" @click="deduplicateSources" title="自动整理书源网址，合并同名或重复的书源">
-            <Sparkles :size="16" />合并同名书源
+          <button class="secondary" :disabled="busy || !sourceTotal" @click="deduplicateSources" title="合并同名或重复书源">
+            <Sparkles :size="15" />合并重复
           </button>
-          <button :disabled="busy || !sources.length" @click="exportSources">
-            <Download :size="16" />导出书源
+          <button :disabled="busy || !sources.length" @click="exportSources" title="导出全部书源配置">
+            <Download :size="15" />导出
           </button>
           <button class="primary" :disabled="busy" @click="importOpen = !importOpen">
-            <Plus :size="17" />导入网络书源
+            <Plus :size="16" />导入书源
           </button>
         </div>
       </div>
@@ -987,8 +986,7 @@ onMounted(load)
               <td>
                 <div class="source-url-cell">
                   <span class="source-url-text">{{ source.url || '未提供网址' }}</span>
-                  <div class="source-control-col" aria-label="书源归属与连通状态">
-                    <span class="ownership-pill">个人书源 · 自主控制</span>
+                  <div class="source-control-col" aria-label="书源状态">
                     <span v-if="probedAliveIds.has(source.id)" class="probe-alive-pill">
                       <Check :size="12" /> 可用
                     </span>
@@ -1008,7 +1006,7 @@ onMounted(load)
               <td>
                 <div class="actions source-actions-cell">
                   <button class="text-button" :disabled="busy" @click="checkId = source.id; checkResults = null; checkKeyword = ''">
-                    检测可用性
+                    测试
                   </button>
                   <button class="text-button" :disabled="busy" @click="edit(source)">编辑</button>
                   <button
@@ -1027,58 +1025,64 @@ onMounted(load)
       </div>
 
       <!-- 卡片列表视图 -->
+      <!-- 卡片列表视图（移动端优化：自适应精炼三层结构） -->
       <div v-if="sources.length && sourceViewMode === 'cards'" class="source-list">
         <article
           v-for="source in sources"
           :key="source.id"
           :class="['panel source-row', { 'source-selected': selectedSourceIds.includes(source.id) }]"
         >
-          <label class="source-select-box" :aria-label="`选择 ${source.name}`">
-            <input
-              type="checkbox"
-              :value="source.id"
-              v-model="selectedSourceIds"
-            />
-          </label>
-          <span class="source-icon"><Globe2 :size="22" /></span>
-          <div class="source-info">
-            <h3>
-              {{ source.name }}
+          <!-- 顶层：选择 + 标题 + 标签 + 可用徽标 + 启用状态切换 -->
+          <div class="source-card-header">
+            <div class="source-title-wrap">
+              <label class="source-select-box" :aria-label="`选择 ${source.name}`">
+                <input
+                  type="checkbox"
+                  :value="source.id"
+                  v-model="selectedSourceIds"
+                />
+              </label>
+              <h3 class="source-name">{{ source.name }}</h3>
               <span class="tag" v-if="source.group">{{ source.group }}</span>
-            </h3>
-            <p class="source-url-line">{{ source.url || '未提供网址' }}</p>
-            <small>更新于 {{ date(source.updatedAt) }}</small>
-          </div>
-
-          <div class="source-control-col" aria-label="书源归属与连通状态">
-            <span class="ownership-pill">
-              个人书源 · 自主控制
-            </span>
-            <span v-if="probedAliveIds.has(source.id)" class="probe-alive-pill">
-              <Check :size="12" /> 可用
-            </span>
-          </div>
-
-          <div class="actions source-row-actions">
+              <div class="source-control-col" aria-label="书源状态">
+                <span v-if="probedAliveIds.has(source.id)" class="probe-alive-pill">
+                  <Check :size="11" /> 可用
+                </span>
+              </div>
+            </div>
             <button
               :class="['status-toggle', { enabled: source.enabled }]"
               :aria-pressed="source.enabled"
               :disabled="busy"
               @click="toggleSource(source)"
+              title="切换书源状态"
             >
               {{ source.enabled ? '已启用' : '已停用' }}
             </button>
-            <button :disabled="busy" @click="edit(source)">编辑</button>
-            <button :disabled="busy" @click="checkId = source.id; checkResults = null; checkKeyword = ''">
-              检测可用性
+          </div>
+
+          <!-- 中间层：网址与更新时间 -->
+          <div class="source-card-meta">
+            <span class="source-url-line" :title="source.url">{{ source.url || '未提供网址' }}</span>
+            <span class="source-date-line">更新于 {{ date(source.updatedAt) }}</span>
+          </div>
+
+          <!-- 底层：快捷操作按钮 -->
+          <div class="source-card-footer actions">
+            <button class="text-button compact-btn" :disabled="busy" @click="checkId = source.id; checkResults = null; checkKeyword = ''">
+              测试
+            </button>
+            <button class="text-button compact-btn" :disabled="busy" @click="edit(source)">
+              编辑
             </button>
             <button
-              class="icon-button danger"
+              class="icon-button danger compact-btn"
               :disabled="busy"
               @click="deleteSource(source)"
               :aria-label="`删除 ${source.name}`"
+              title="删除此书源"
             >
-              <Trash2 :size="16" />
+              <Trash2 :size="15" />
             </button>
           </div>
         </article>
